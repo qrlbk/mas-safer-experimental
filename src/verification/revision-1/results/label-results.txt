@@ -1,0 +1,1 @@
+PASS: no newly unresolved static CMD label references in all 10 scripts.

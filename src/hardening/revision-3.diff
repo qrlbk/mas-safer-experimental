@@ -1,0 +1,2242 @@
+--- safer-r2/MAS/All-In-One-Version-KL/MAS_AIO.cmd
++++ safer-r3/MAS/All-In-One-Version-KL/MAS_AIO.cmd
+@@ -6,6 +6,8 @@
+ @set masver=3.14
+ @setlocal DisableDelayedExpansion
+ @echo off
++@setlocal EnableExtensions DisableDelayedExpansion
++@for %%P in (%*) do @if /i "%%~P"=="/Plan" goto :mas_safer_plan
+ 
+ :: MAS 3.14 LOCAL SAFER BUILD - experimental; see README-SAFER.txt.
+ :: Set a specific switch to 1 only after reading its documented effects.
+@@ -13,6 +15,8 @@
+ set "MAS_SAFER_ALLOW_LICENSE_CLEANUP=0"
+ set "MAS_SAFER_ALLOW_REPAIRS=0"
+ set "MAS_SAFE_SELF=%~f0"
++set "MAS_RECOVERY_RUN_ID="
++set "MAS_RECOVERY_LOG_FAILED="
+ 
+ 
+ 
+@@ -792,6 +796,9 @@
+ ::  Windows License Manager Service
+ ::  Windows Management Instrumentation
+ 
++call :mas_safer_journal_begin HWID
++if errorlevel 1 (set error=1&goto :dk_done)
++call :mas_safer_journal_event diagnostics
+ call :dk_errorcheck
+ 
+ ::========================================================================================================================================
+@@ -878,6 +885,7 @@
+ if exist "%tdir%\*.xml" del /f /q "%tdir%\*.xml" %nul%
+ if exist "%ProgramData%\Microsoft\Windows\ClipSVC\Install\Migration\*" del /f /q "%ProgramData%\Microsoft\Windows\ClipSVC\Install\Migration\*" %nul%
+ 
++call :mas_safer_journal_event hwid-ticket-may-run
+ call :hwiddata ticket
+ 
+ copy /y /b "%tdir%\GenuineTicket" "%tdir%\GenuineTicket.xml" %nul%
+@@ -1265,6 +1273,7 @@
+ ::  Install Key
+ 
+ :dk_inskey
++call :mas_safer_journal_event key-install-may-run
+ 
+ if %_wmic% EQU 1 wmic path %sps% where __CLASS='%sps%' call InstallProductKey ProductKey="%key%" %nul%
+ if %_wmic% EQU 0 %psc% "try { $null=(([WMISEARCHER]'SELECT Version FROM %sps%').Get()).InstallProductKey('%key%'); exit 0 } catch { exit $_.Exception.InnerException.HResult }" %nul%
+@@ -2249,6 +2258,7 @@
+ ::========================================================================================================================================
+ 
+ :dk_done
++call :mas_safer_journal_end
+ 
+ echo:
+ if %_unattended%==1 timeout /t 2 & exit /b
+@@ -2585,6 +2595,9 @@
+ 
+ set notwinact=1
+ set ohookact=1
++call :mas_safer_journal_begin Ohook
++if errorlevel 1 (set error=1&goto :dk_done)
++call :mas_safer_journal_event diagnostics
+ call :dk_errorcheck
+ 
+ call :oh_setspp
+@@ -2897,6 +2910,8 @@
+ ::========================================================================================================================================
+ 
+ :oh_uninstall
++call :mas_safer_journal_begin Ohook-Uninstall
++if errorlevel 1 (set error=1&goto :dk_done)
+ 
+ cls
+ if not defined terminal mode 145, 32
+@@ -3140,6 +3155,7 @@
+ ::========================================================================================================================================
+ 
+ :oh_hookinstall
++call :mas_safer_journal_event ohook-files-may-change
+ set ierror=
+ set hasherror=
+ set "MAS_SAFE_SELF=%~f0"
+@@ -3149,6 +3165,7 @@
+ goto :oh_hookinstall_error
+ 
+ :oh_hookinstall_ospp
++call :mas_safer_journal_event ohook-files-may-change
+ set ierror=
+ set hasherror=
+ set "MAS_SAFE_SELF=%~f0"
+@@ -4342,6 +4359,9 @@
+ ::  Software Protection
+ ::  Windows Management Instrumentation
+ 
++call :mas_safer_journal_begin TSforge
++if errorlevel 1 (set error=1&goto :dk_done)
++call :mas_safer_journal_event diagnostics
+ call :dk_errorcheck
+ 
+ call :ts_getedition
+@@ -5539,6 +5559,7 @@
+ ::========================================================================================================================================
+ 
+ :ts_act
++call :mas_safer_journal_event tsforge-processing
+ 
+ if defined eval (
+ echo:
+@@ -11101,6 +11122,7 @@
+             string[] permissions = new string[names.Length];
+             int attempted = 0;
+             bool committed = false;
++            RecoveryJournal journal = new RecoveryJournal("TSforge-store-files");
+             try
+             {
+                 // Independent, verified backups survive partial failures inside File.Replace.
+@@ -11123,29 +11145,41 @@
+                     ApplyPermissions(temporary[i], permissions[i]);
+                     if (!File.ReadAllBytes(temporary[i]).SequenceEqual(data[i]))
+                         throw new IOException("Staged store verification failed.");
++                    journal.Required("backup-verified", names[i], backups[i], "",
++                        RecoveryJournal.Hash(File.ReadAllBytes(backups[i])), "original-bytes");
++                    journal.Required("output-staged", names[i], backups[i], temporary[i],
++                        RecoveryJournal.Hash(data[i]), "no-destination-change-yet");
+                 }
+                 for (int i = 0; i < names.Length; i++)
+                 {
+                     CheckPath(names[i]);
+                     if (!File.ReadAllBytes(names[i]).SequenceEqual(File.ReadAllBytes(backups[i])))
+                         throw new IOException("Store changed after staging; refusing replacement.");
++                    journal.Required("replace-intent", names[i], backups[i], displaced[i], "", "may-partially-complete");
+                     attempted = i + 1; // Include partial failure INSIDE the native call.
+                     File.Replace(temporary[i], names[i], displaced[i]);
++                    journal.Note("replace-returned", names[i], backups[i], "", "", "file-operation-only");
+                 }
+                 committed = true;
++                journal.Note("files-committed", "", "", "", "", "activation-not-verified");
+             }
+             catch (Exception writeError)
+             {
+                 string rollbackErrors = "";
++                journal.Note("operation-failed", "", "", "", "", writeError.GetType().FullName);
+                 for (int i = attempted - 1; i >= 0; i--)
+                 {
+                     string restore = names[i] + suffix + ".restore";
+                     try
+                     {
++                        journal.Note("rollback-intent", names[i], backups[i], restore, "", "recovery-pending");
+                         CheckPath(names[i], true);
+                         CheckPath(backups[i]);
+                         if (File.Exists(names[i]) && File.ReadAllBytes(names[i]).SequenceEqual(File.ReadAllBytes(backups[i])))
++                        {
++                            journal.Note("rollback-item", names[i], backups[i], "", "", "unchanged");
+                             continue; // Failed before mutation; leave the original in place.
++                        }
+                         File.Copy(backups[i], restore, false);
+                         ApplyPermissions(restore, permissions[i]);
+                         if (!File.ReadAllBytes(restore).SequenceEqual(File.ReadAllBytes(backups[i])))
+@@ -11155,9 +11189,16 @@
+                             File.Replace(restore, names[i], names[i] + suffix + ".rollback-displaced");
+                         else
+                             File.Move(restore, names[i]);
++                        journal.Note("rollback-item", names[i], backups[i], restore, "", "restored");
+                     }
+-                    catch (Exception ex) { rollbackErrors += " " + names[i] + ": " + ex.Message; }
++                    catch (Exception ex)
++                    {
++                        rollbackErrors += " " + names[i] + ": " + ex.Message;
++                        journal.Note("rollback-item", names[i], backups[i], restore, "", "manual-recovery:" + ex.GetType().FullName);
++                    }
+                 }
++                journal.Note("file-rollback-ended", "", "", "", "",
++                    rollbackErrors.Length == 0 ? "restored-or-unchanged; licensing-state-not-restored" : "manual-recovery-required");
+                 throw new IOException("Store write failed. Backups retained with suffix " + suffix +
+                     (rollbackErrors.Length == 0 ? ". Attempted file replacements restored or unchanged; licensing API/registry changes are not rolled back." :
+                     ". MANUAL RECOVERY REQUIRED:" + rollbackErrors), writeError);
+@@ -11168,7 +11209,7 @@
+                 if (committed) foreach (string path in temporary.Concat(displaced))
+                 {
+                     try { if (File.Exists(path)) File.Delete(path); }
+-                    catch { /* Keep staging file rather than hiding the primary error. */ }
++                    catch (Exception cleanupError) { journal.Note("cleanup-retained", path, "", "", "", cleanupError.GetType().FullName); }
+                 }
+             }
+         }
+@@ -11179,6 +11220,102 @@
+             finished = true;
+             paths.Clear();
+             contents.Clear();
++        }
++    }
++}
++
++
++// Recovery metadata only. Never logs license/key contents or exception messages.
++namespace LibTSforge
++{
++    using System;
++    using System.IO;
++    using System.Security.AccessControl;
++    using System.Security.Principal;
++    using System.Text;
++    using System.Security.Cryptography;
++
++    public sealed class RecoveryJournal
++    {
++        private readonly string folder;
++        private readonly string scope;
++        public string Folder { get { return folder; } }
++
++        private static void CheckDirectory(string path)
++        {
++            for (string p = Path.GetFullPath(path); !string.IsNullOrEmpty(p); p = Path.GetDirectoryName(p))
++                if ((File.GetAttributes(p) & FileAttributes.ReparsePoint) != 0 || !Directory.Exists(p))
++                    throw new IOException("Redirected or missing recovery directory.");
++        }
++
++        public RecoveryJournal(string operationScope)
++        {
++            scope = operationScope;
++            string windows = Environment.GetEnvironmentVariable("windir");
++            CheckDirectory(windows);
++            string root = Path.Combine(windows, "MAS-Safer-Recovery");
++            DirectorySecurity acl = new DirectorySecurity();
++            acl.SetAccessRuleProtection(true, false);
++            foreach (string sid in new string[] { "S-1-5-18", "S-1-5-32-544" })
++                acl.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(sid), FileSystemRights.FullControl,
++                    InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
++            if (!Directory.Exists(root)) Directory.CreateDirectory(root, acl);
++            CheckDirectory(root);
++            new DirectoryInfo(root).SetAccessControl(acl);
++            folder = Path.Combine(root, Guid.NewGuid().ToString("N"));
++            Directory.CreateDirectory(folder, acl);
++            Required("operation-started", "", "", "", "", "not-completed");
++            Console.WriteLine("Recovery journal: " + folder);
++        }
++
++        private static string Quote(string value)
++        {
++            StringBuilder result = new StringBuilder("\"");
++            foreach (char c in value ?? "")
++            {
++                if (c == '"' || c == '\\') { result.Append('\\'); result.Append(c); }
++                else if (c < 32) result.Append("\\u" + ((int)c).ToString("x4"));
++                else result.Append(c);
++            }
++            return result.Append('"').ToString();
++        }
++
++        public static string Hash(byte[] bytes)
++        {
++            using (SHA256 sha = SHA256.Create())
++                return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
++        }
++
++        public void Required(string phase, string item, string backup, string auxiliary, string hash, string result)
++        {
++            CheckDirectory(folder);
++            string path = Path.Combine(folder, "events.jsonl");
++            if (File.Exists(path) && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
++                throw new IOException("Redirected journal refused.");
++            string parent = Environment.GetEnvironmentVariable("MAS_RECOVERY_RUN_ID");
++            try { parent = new Guid(parent).ToString("N"); } catch { parent = ""; }
++            string json = "{\"schema\":1,\"utc\":" + Quote(DateTime.UtcNow.ToString("o")) +
++                ",\"operation\":" + Quote(Path.GetFileName(folder)) + ",\"parent\":" + Quote(parent) +
++                ",\"scope\":" + Quote(scope) + ",\"event\":" + Quote(phase) + ",\"item\":" + Quote(item) +
++                ",\"backup\":" + Quote(backup) + ",\"auxiliary\":" + Quote(auxiliary) +
++                ",\"sha256\":" + Quote(hash) + ",\"result\":" + Quote(result) + "}" + Environment.NewLine;
++            byte[] bytes = Encoding.UTF8.GetBytes(json);
++            using (FileStream stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read, 4096, FileOptions.WriteThrough))
++            {
++                stream.Write(bytes, 0, bytes.Length);
++                stream.Flush();
++            }
++        }
++
++        // Logging failure during recovery must never interrupt the recovery itself.
++        public void Note(string phase, string item, string backup, string auxiliary, string hash, string result)
++        {
++            try { Required(phase, item, backup, auxiliary, hash, result); }
++            catch
++            {
++                try { Console.Error.WriteLine("Recovery journal incomplete: " + folder + ". Inspect backups; outcome is unknown."); }
++                catch { /* A closed console must not interrupt rollback either. */ }
++            }
+         }
+     }
+ }
+@@ -11210,6 +11347,12 @@
+ if ($env:_debug -eq '0') {
+     [LibTSforge.Logger]::HideOutput = $true
+ }
++$masJournal = $null
++$masJournalOutcome = 'interrupted-or-unknown'
++$errcode = 0
++try {
++    $masJournal = New-Object LibTSforge.RecoveryJournal('TSforge-processing')
++    $masJournal.Required('licensing-actions-may-run','','','','','keys-registry-services-not-transactional')
+ [void][LibTSforge.Utils]::Wow64EnableWow64FsRedirection($false)
+ $ver = [LibTSforge.Utils]::DetectVersion()
+ $prod = [LibTSforge.SPP.SPPUtils]::DetectCurrentKey()
+@@ -11401,6 +11544,15 @@
+     }
+ }
+ 
++$masJournalOutcome = if ($errcode -eq 3) { 'worker-returned-with-errors' } else { 'worker-returned; activation-not-independently-verified' }
++} catch {
++    $errcode = 3
++    $masJournalOutcome = 'worker-exception; licensing-state-unknown'
++    if ($masJournal) { $masJournal.Note('worker-failed','','','','',$_.Exception.GetType().FullName) }
++    Write-Host 'TSforge processing failed. Inspect the recovery journal and existing error output.' -ForegroundColor Red
++} finally {
++    if ($masJournal) { $masJournal.Note('worker-ended','','','','',$masJournalOutcome) }
++}
+ Exit $errcode
+ :tsforge:
+ 
+@@ -12247,6 +12399,9 @@
+ ::  Windows Management Instrumentation
+ 
+ if %_actwin%==0 set notwinact=1
++call :mas_safer_journal_begin KMS
++if errorlevel 1 (set error=1&goto :dk_done)
++call :mas_safer_journal_event diagnostics
+ call :dk_errorcheck
+ 
+ ::========================================================================================================================================
+@@ -12628,6 +12783,7 @@
+ ::========================================================================================================================================
+ 
+ :ks_activate
++call :mas_safer_journal_event kms-processing
+ 
+ ::  Opt out of sending KMSclient activation data to Microsoft
+ ::  https://learn.microsoft.com/en-us/windows/privacy/manage-connections-from-windows-operating-system-components-to-microsoft-services#19-software-protection-platform
+@@ -12924,6 +13080,8 @@
+ ::========================================================================================================================================
+ 
+ :ks_uninstall
++call :mas_safer_journal_begin KMS-Uninstall
++if errorlevel 1 (set error=1&goto :dk_done)
+ 
+ cls
+ if not defined terminal mode 91, 30
+@@ -19088,6 +19246,9 @@
+ :saferohook:
+ $ErrorActionPreference = 'Stop'
+ if ($PSVersionTable.PSVersion -lt [version]'5.1') { throw 'This local safer build requires Windows PowerShell 5.1.' }
++$journalBlock = [IO.File]::ReadAllText($env:MAS_SAFE_SELF) -split '(?m)^:saferjournal:\r?$'
++if ($journalBlock.Count -ne 3) { throw 'Invalid recovery journal helper block.' }
++. ([scriptblock]::Create($journalBlock[1])) # Definitions only; plan/preflight creates no journal.
+ $hashes = @{
+     'sppc32.dll' = '09865ea5993215965e8f27a74b8a41d15fd0f60f5f404cb7a8b3c7757acdab02'
+     'sppc64.dll' = '393a1fa26deb3663854e41f2b687c188a9eacd87b23f17ea09422c4715cb5a9f'
+@@ -19245,6 +19406,11 @@
+ Set-Acl -LiteralPath $backupRoot -AclObject $acl
+ $backup = Join-Path $backupRoot ([guid]::NewGuid().ToString('N'))
+ [void][IO.Directory]::CreateDirectory($backup)
++Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'operation-started' -Result $env:MAS_SAFE_ACTION -Required $true
++$attempted = New-Object Collections.Generic.List[int]
++$staged = @{}
++$complete = $false
++try {
+ foreach ($plan in $plans) {
+     $item = Item $plan.Path
+     $saved = [pscustomobject]@{Path=$plan.Path; Existed=[bool]$item; Link=$null; Backup=$null; Hash=$null; Acl=$null}
+@@ -19259,12 +19425,9 @@
+         }
+     }
+     $snapshots.Add($saved)
++    Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'backup-recorded' -Item $saved.Path -Backup $saved.Backup -Auxiliary $saved.Link -Sha256 $saved.Hash -Result ('existed='+$saved.Existed) -Required $true
+ }
+ $snapshots | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $backup 'manifest.json') -Encoding UTF8
+-$attempted = New-Object Collections.Generic.List[int]
+-$staged = @{}
+-$complete = $false
+-try {
+     # Prepare every replacement before touching any destination.
+     for ($i=0; $i -lt $plans.Count; $i++) {
+         $plan = $plans[$i]
+@@ -19276,6 +19439,7 @@
+             $sha = [Security.Cryptography.SHA256]::Create()
+             try { $expected = ([BitConverter]::ToString($sha.ComputeHash([byte[]]$plan.Data))).Replace('-','') } finally { $sha.Dispose() }
+             if ((Get-FileHash -LiteralPath $tmp).Hash -ne $expected) { throw 'Staged DLL verification failed.' }
++            Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'output-staged' -Item $plan.Path -Auxiliary $tmp -Sha256 $expected -Required $true
+         }
+     }
+     for ($i=0; $i -lt $plans.Count; $i++) {
+@@ -19287,6 +19451,7 @@
+             elseif (-not $current -or $current.PSIsContainer -or ($current.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+                     (Get-FileHash -LiteralPath $plan.Path).Hash -ne $saved.Hash) { throw 'File changed after backup.' }
+         } elseif ($current) { throw 'Destination appeared after preflight.' }
++        Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'mutation-intent' -Item $plan.Path -Backup $saved.Backup -Auxiliary ([string]$staged[$i]) -Result $plan.Kind -Required $true
+         $attempted.Add($i) # Only now may a native operation partially change its destination.
+         if ($plan.Kind -eq 'file') {
+             if ($current) { [IO.File]::Replace($staged[$i],$plan.Path,$staged[$i]+'.displaced') }
+@@ -19294,16 +19459,20 @@
+         } elseif ($plan.Kind -eq 'link') {
+             [void](New-Item -ItemType SymbolicLink -Path $plan.Path -Target $plan.Data)
+         } else { Remove-Item -LiteralPath $plan.Path -Force }
++        Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'mutation-returned' -Item $plan.Path -Result 'file-operation-only'
+     }
+     'complete' | Set-Content -LiteralPath (Join-Path $backup 'status.txt')
+     $complete = $true
++    Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'files-committed' -Result 'activation-not-verified'
+     Write-Host "Verified Ohook files updated. Backups: $backup"
+ } catch {
+     $failure = $_
+     $rollbackErrors = @()
++    Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'operation-failed' -Result $failure.Exception.GetType().FullName
+     for ($a=$attempted.Count-1; $a -ge 0; $a--) {
+         $i=$attempted[$a]; $saved=$snapshots[$i]; $plan=$plans[$i]
+         try {
++            Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'rollback-intent' -Item $saved.Path -Backup $saved.Backup -Result 'recovery-pending'
+             Assert-Directory (Split-Path -Parent $saved.Path)
+             $current = Item $saved.Path
+             if ($saved.Existed) {
+@@ -19313,7 +19482,10 @@
+                 }
+                 else {
+                     if ($current -and ($current.PSIsContainer -or ($current.Attributes -band [IO.FileAttributes]::ReparsePoint))) { throw 'Unexpected rollback destination; preserving it.' }
+-                    if ($current -and (Get-FileHash -LiteralPath $saved.Path).Hash -eq $saved.Hash) { continue }
++                    if ($current -and (Get-FileHash -LiteralPath $saved.Path).Hash -eq $saved.Hash) {
++                        Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'rollback-item' -Item $saved.Path -Sha256 $saved.Hash -Result 'unchanged'
++                        continue
++                    }
+                     # Never delete the current DLL before preparing its complete replacement.
+                     $restore = $saved.Path + '.mas-restore-' + [guid]::NewGuid().ToString('N')
+                     if ((Get-FileHash -LiteralPath $saved.Backup).Hash -ne $saved.Hash) { throw 'Recovery backup hash mismatch.' }
+@@ -19322,6 +19494,7 @@
+                     $fileAcl=New-Object Security.AccessControl.FileSecurity
+                     $fileAcl.SetSecurityDescriptorSddlForm($saved.Acl,[Security.AccessControl.AccessControlSections]::Access)
+                     Set-Acl -LiteralPath $restore -AclObject $fileAcl
++                    Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'recovery-staged' -Item $saved.Path -Backup $saved.Backup -Auxiliary $restore -Sha256 $saved.Hash
+                     if ($current) { [IO.File]::Replace($restore,$saved.Path,$restore+'.displaced') }
+                     else { [IO.File]::Move($restore,$saved.Path) }
+                 }
+@@ -19336,14 +19509,23 @@
+                 } else { throw 'Unexpected rollback operation.' }
+                 Remove-Item -LiteralPath $saved.Path -Force
+             }
+-        } catch { $rollbackErrors += $_.Exception.Message }
++            Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'rollback-item' -Item $saved.Path -Backup $saved.Backup -Result 'restored-or-removed-new-object'
++        } catch {
++            $rollbackErrors += $_.Exception.Message
++            Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'rollback-item' -Item $saved.Path -Backup $saved.Backup -Result ('manual-recovery:'+$_.Exception.GetType().FullName)
++        }
+     }
++    $rollbackResult = if ($rollbackErrors.Count) { 'manual-recovery-required' } else { 'restored-or-unchanged; licensing-state-not-restored' }
++    Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'file-rollback-ended' -Result $rollbackResult
+     throw "Ohook operation failed: $($failure.Exception.Message). Backups: $backup. File rollback errors: $($rollbackErrors -join '; '). Licensing API/registry changes are not rolled back."
+ } finally {
+     if ($complete) {
+         foreach ($tmp in $staged.Values) {
+             foreach ($path in @($tmp,($tmp+'.displaced'))) {
+-                try { if (Item $path) { Remove-Item -LiteralPath $path -Force } } catch { Write-Warning "Retained staging file: $path" }
++                try { if (Item $path) { Remove-Item -LiteralPath $path -Force } } catch {
++                    Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'cleanup-retained' -Item $path -Result $_.Exception.GetType().FullName
++                    Write-Warning "Retained staging file: $path"
++                }
+             }
+         }
+     }
+@@ -19391,3 +19573,242 @@
+ foreach ($file in $files) { Remove-Item -LiteralPath $file.FullName -Force }
+ if (Test-Path -LiteralPath $dest) { [IO.Directory]::Delete($dest,$false) }
+ :saferkms:
++
++exit /b
++:mas_safer_plan
++setlocal EnableExtensions DisableDelayedExpansion
++if /i not "%~1"=="/Plan" (
++echo /Plan must be the first argument. Mixed activation arguments were refused.
++exit /b 2
++)
++if not "%~3"=="" (
++echo Plan accepts only one optional scope: All, HWID, Ohook, TSforge or KMS.
++exit /b 2
++)
++set "MAS_SAFE_SELF=%~f0"
++set "MAS_PLAN_METHOD=%~2"
++set "MAS_PLAN_PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
++if exist "%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe" set "MAS_PLAN_PS=%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
++"%MAS_PLAN_PS%" -NoLogo -NoProfile -NonInteractive -Command "$ErrorActionPreference='Stop'; try { $b=[IO.File]::ReadAllText($env:MAS_SAFE_SELF) -split '(?m)^:saferplan:\r?$'; if ($b.Count -ne 3) { throw 'Invalid plan block' }; & ([scriptblock]::Create($b[1])); exit 0 } catch { Write-Error ('Plan unavailable: '+$_.Exception.Message); exit 2 }"
++exit /b %errorlevel%
++
++:mas_safer_journal_begin
++set "MAS_RECOVERY_SCOPE=%~1"
++set "MAS_RECOVERY_RUN_ID="
++set "MAS_RECOVERY_LOG_FAILED="
++set "MAS_RECOVERY_ACTION=begin"
++for /f "delims=" %%J in ('%psc% "$ErrorActionPreference='Stop'; try { $b=[IO.File]::ReadAllText($env:MAS_SAFE_SELF) -split '(?m)^:saferjournal:\r?$'; if ($b.Count -ne 3) { throw 'Invalid journal block' }; . ([scriptblock]::Create($b[1])); Invoke-BatchJournal } catch { [Console]::Error.WriteLine('Recovery journal could not be initialized. No activation phase was started.'); exit 1 }"') do set "MAS_RECOVERY_RUN_ID=%%J"
++if not defined MAS_RECOVERY_RUN_ID exit /b 1
++echo Recovery journal: %windir%\MAS-Safer-Recovery\%MAS_RECOVERY_RUN_ID%
++exit /b 0
++
++:mas_safer_journal_event
++set "MAS_RECOVERY_SAVED_RC=%errorlevel%"
++if not defined MAS_RECOVERY_RUN_ID exit /b %MAS_RECOVERY_SAVED_RC%
++set "MAS_RECOVERY_ACTION=phase"
++set "MAS_RECOVERY_EVENT=%~1"
++call :mas_safer_journal_write
++exit /b %MAS_RECOVERY_SAVED_RC%
++
++:mas_safer_journal_end
++if not defined MAS_RECOVERY_RUN_ID exit /b
++set "MAS_RECOVERY_ACTION=end"
++call :mas_safer_journal_write
++set "MAS_RECOVERY_RUN_ID="
++exit /b
++
++:mas_safer_journal_write
++%psc% "$ErrorActionPreference='Stop'; try { $b=[IO.File]::ReadAllText($env:MAS_SAFE_SELF) -split '(?m)^:saferjournal:\r?$'; if ($b.Count -ne 3) { throw 'Invalid journal block' }; . ([scriptblock]::Create($b[1])); Invoke-BatchJournal; exit 0 } catch { [Console]::Error.WriteLine('Recovery journal incomplete. Inspect backups; activation/recovery outcome is not implied.'); exit 1 }"
++if errorlevel 1 set "MAS_RECOVERY_LOG_FAILED=1"
++exit /b
++
++:saferplan:
++# Read-only inventory and conditional plan. Never imports or invokes activation code.
++$ErrorActionPreference = 'Stop'
++if ($PSVersionTable.PSVersion -lt [version]'5.1') { throw 'Plan view requires Windows PowerShell 5.1.' }
++$method = $env:MAS_PLAN_METHOD
++if ([string]::IsNullOrWhiteSpace($method)) {
++    $method = switch ([IO.Path]::GetFileName($env:MAS_SAFE_SELF)) {
++        'HWID_Activation.cmd' { 'HWID' }
++        'Ohook_Activation_AIO.cmd' { 'Ohook' }
++        'TSforge_Activation.cmd' { 'TSforge' }
++        'Online_KMS_Activation.cmd' { 'KMS' }
++        default { 'All' }
++    }
++}
++if ($method -notin @('All','HWID','Ohook','TSforge','KMS')) { throw 'Use /Plan with All, HWID, Ohook, TSforge or KMS. No activation was requested.' }
++$source = $env:MAS_SAFE_SELF
++if (-not [IO.File]::Exists($source)) { throw 'The source script could not be read.' }
++$sourceText = [IO.File]::ReadAllText($source)
++function Show([string]$line) { Write-Output $line }
++function Read-Registry([string]$path, [string[]]$names) {
++    foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64,[Microsoft.Win32.RegistryView]::Registry32)) {
++        $base = $null; $key = $null
++        try {
++            $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine,$view)
++            $key = $base.OpenSubKey($path,$false)
++            if ($key) {
++                foreach ($name in $names) {
++                    $value = $key.GetValue($name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
++                    if ($null -ne $value) {
++                        # Registry strings are data, never commands; remove control characters from display.
++                        Show ('  {0} {1}: {2}' -f $view,$name,([regex]::Replace([string]$value,'[\x00-\x1f\x7f]',' ')))
++                    }
++                }
++            }
++        } catch { Show ('  {0}: unavailable ({1})' -f $view,$_.Exception.GetType().Name) }
++        finally { if ($key) { $key.Dispose() }; if ($base) { $base.Dispose() } }
++    }
++}
++function Show-Flag([string]$name) {
++    $matches = [regex]::Matches($sourceText,'(?im)^set\s+"?'+[regex]::Escape($name)+'=([01])"?\s*$')
++    if ($matches.Count -eq 1) { Show ('  {0}={1}' -f $name,$matches[0].Groups[1].Value) }
++    else { Show ('  {0}: source-dependent or unavailable; inspect the chosen module' -f $name) }
++}
++Show 'MAS safer r3 - PLAN ONLY'
++Show ('Source: '+[IO.Path]::GetFileName($source))
++Show ('Selected scope: '+$method)
++Show 'No activation, elevation, service control, registry writes, downloads or journal creation is performed by this mode.'
++Show 'This is a conditional plan, not a successful preflight or a guarantee of activation.'
++Show ''
++Show 'Windows inventory (read-only):'
++Read-Registry 'SOFTWARE\Microsoft\Windows NT\CurrentVersion' @('ProductName','EditionID','CurrentBuildNumber','DisplayVersion','UBR')
++Show ('Process architecture: '+$env:PROCESSOR_ARCHITECTURE)
++try {
++    $drive = New-Object IO.DriveInfo([IO.Path]::GetPathRoot($env:windir))
++    Show ('Free space on Windows volume: {0:N2} GiB (no write probe)' -f ($drive.AvailableFreeSpace/1GB))
++} catch { Show 'Free space: unavailable; not treated as sufficient.' }
++Show ''
++Show 'Source defaults (runtime options and product discovery may change the actual path):'
++foreach ($flag in 'MAS_SAFER_ALLOW_PUBLIC_KMS','MAS_SAFER_ALLOW_LICENSE_CLEANUP','MAS_SAFER_ALLOW_REPAIRS','_NoEditionChange','_norentsk') { Show-Flag $flag }
++Show ''
++if ($method -in @('All','HWID')) {
++    Show 'HWID - possible actions when explicitly activated later:'
++    Show '  Inspect Windows edition and existing license; start required services.'
++    Show '  Install a product key, prepare/import a ticket and contact activation services.'
++    Show '  Automatic edition/region changes are disabled by safer defaults.'
++    Show '  Key/ticket/service changes are not covered by automatic file rollback.'
++}
++if ($method -in @('All','Ohook','TSforge','KMS')) {
++    Show ''
++    Show 'Office inventory (C2R registry only; an absent entry does NOT exclude MSI/UWP Office):'
++    Read-Registry 'SOFTWARE\Microsoft\Office\ClickToRun\Configuration' @('InstallationPath','Platform','VersionToReport','ProductReleaseIds')
++    Show 'Office MSI/UWP products and exact hook targets: not resolved in plan-only mode.'
++}
++if ($method -in @('All','Ohook')) {
++    Show ''
++    Show 'Ohook - possible actions when explicitly installed/uninstalled later:'
++    Show '  Resolve C2R/MSI/OSPP paths; check existing DLLs, links and Microsoft signatures.'
++    Show '  Install license/key data; back up recognized DLLs and link metadata.'
++    Show '  Stage verified DLL bytes; replace DLLs/create links; attempt file rollback on failure.'
++    Show '  Uninstall removes recognized forwarding links and restores recognized OSPPC files.'
++    Show '  Conditional targets: Office sppc.dll/sppcs.dll and shared OfficeSoftwareProtectionPlatform\OSPPC.DLL.'
++    Show '  Prior key/registry changes are not undone by DLL rollback.'
++}
++if ($method -in @('All','TSforge')) {
++    Show ''
++    Show 'TSforge - possible actions when explicitly activated later:'
++    Show '  Resolve the licensing store/version and selected product IDs; stop/restart SPP as needed.'
++    Show '  For PKEY2005, validate physical/token stores before removing keys; reopen after licensing API changes.'
++    Show '  Prepare backups and encrypted store outputs; replace stores; attempt per-file recovery on failure.'
++    Show '  Write associated registry data and invalidate cache; perform the selected activation method.'
++    Show '  Candidate store locations (not opened, parsed, hashed or locked by plan mode):'
++    foreach ($relative in 'System32\spp\store','System32\spp\store\2.0','System32\spp\store_test\2.0','ServiceProfiles\NetworkService\AppData\Roaming\Microsoft\SoftwareProtectionPlatform') {
++        Show ('    '+[IO.Path]::Combine($env:windir,$relative))
++    }
++    Show '  A registry-configured TokenStore or legacy Vista store may be used instead.'
++    Show '  Store schema, decryptability, API availability and full-state rollback: NOT verified here.'
++}
++if ($method -in @('All','KMS')) {
++    Show ''
++    Show 'KMS - possible actions when explicitly activated later:'
++    Show '  Install appropriate keys, configure the selected host/port and contact that host.'
++    Show '  With safer defaults and no explicit trusted host, activation is refused.'
++    Show '  Optional renewal-task creation requires different settings; task cleanup may still run.'
++    Show '  Key, host, registry and scheduler changes do not have automatic full rollback.'
++}
++Show ''
++Show 'Journal and recovery limits:'
++Show ('  Future mutation journals: '+[IO.Path]::Combine($env:windir,'MAS-Safer-Recovery'))
++Show ('  Ohook backup manifests/journals: '+[IO.Path]::Combine($env:windir,'MAS-Safer-Backups'))
++Show '  Store .bak/.tmp/.restore files are beside the affected store; journals list exact paths.'
++Show '  No terminal event means interrupted or unknown, never success.'
++Show '  File rollback does not roll back product keys, the registry, service state or remote activation.'
++Show ''
++Show 'Not checked: effective write/delete permissions, backup creation, DLL trust/network certificate checks,'
++Show 'store compatibility, licensing service health, network reachability, activation or recovery behavior.'
++Show 'Plan view ends here. It never continues into activation.'
++
++:saferplan:
++:saferjournal:
++# Definitions only. Loading this block does not create files.
++function Assert-RecoveryDirectory([string]$path) {
++    if (-not [IO.Path]::IsPathRooted($path) -or -not [IO.Directory]::Exists($path)) { throw 'Invalid recovery directory.' }
++    for ($d = Get-Item -LiteralPath $path -Force; $null -ne $d; $d = $d.Parent) {
++        if ($d.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Redirected recovery directory refused.' }
++    }
++}
++function New-RecoveryFolder {
++    $root = Join-Path $env:windir 'MAS-Safer-Recovery'
++    Assert-RecoveryDirectory $env:windir
++    $acl = New-Object Security.AccessControl.DirectorySecurity
++    $acl.SetAccessRuleProtection($true,$false)
++    foreach ($sid in 'S-1-5-18','S-1-5-32-544') {
++        $identity = New-Object Security.Principal.SecurityIdentifier($sid)
++        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($identity,'FullControl','ContainerInherit,ObjectInherit','None','Allow')))
++    }
++    if (-not [IO.Directory]::Exists($root)) { [void][IO.Directory]::CreateDirectory($root,$acl) }
++    Assert-RecoveryDirectory $root
++    Set-Acl -LiteralPath $root -AclObject $acl
++    $directory = Join-Path $root ([guid]::NewGuid().ToString('N'))
++    [void][IO.Directory]::CreateDirectory($directory,$acl)
++    return $directory
++}
++function Write-RecoveryRecord {
++    param([string]$Directory,[string]$Scope,[string]$Event,[string]$Item='',
++          [string]$Backup='',[string]$Auxiliary='',[string]$Sha256='',
++          [string]$Result='',[bool]$Required=$false)
++    try {
++        Assert-RecoveryDirectory $Directory
++        $path = Join-Path $Directory 'events.jsonl'
++        if ([IO.File]::Exists($path) -and (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { throw 'Redirected journal refused.' }
++        $parent = $env:MAS_RECOVERY_RUN_ID
++        if ($parent -notmatch '^[a-fA-F0-9]{32}$') { $parent = '' }
++        if ($parent -eq [IO.Path]::GetFileName($Directory)) { $parent = '' }
++        $record = [ordered]@{schema=1;utc=[DateTime]::UtcNow.ToString('o');operation=[IO.Path]::GetFileName($Directory);
++            parent=$parent;scope=$Scope;event=$Event;item=$Item;backup=$Backup;auxiliary=$Auxiliary;sha256=$Sha256;result=$Result}
++        $bytes = [Text.Encoding]::UTF8.GetBytes(($record | ConvertTo-Json -Compress -Depth 3)+[Environment]::NewLine)
++        $stream = New-Object IO.FileStream($path,[IO.FileMode]::Append,[IO.FileAccess]::Write,[IO.FileShare]::Read,4096,[IO.FileOptions]::WriteThrough)
++        try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush() } finally { $stream.Dispose() }
++    } catch {
++        if ($Required) { throw 'Recovery journal could not be written; the next mutation was not started.' }
++        try { Write-Warning ('Recovery journal incomplete: '+$Directory+'. Inspect backups; no recovery outcome is implied.') -WarningAction Continue }
++        catch { # A closed output stream must not interrupt rollback either.
++        }
++    }
++}
++function Invoke-BatchJournal {
++    $ErrorActionPreference = 'Stop'
++    if ($PSVersionTable.PSVersion -lt [version]'5.1') { throw 'Recovery journal requires Windows PowerShell 5.1.' }
++    $scope = $env:MAS_RECOVERY_SCOPE
++    if ($scope -notin @('HWID','Ohook','TSforge','KMS','Ohook-Uninstall','KMS-Uninstall')) { throw 'Unknown journal scope.' }
++    if ($env:MAS_RECOVERY_ACTION -eq 'begin') {
++        $directory = New-RecoveryFolder
++        Write-RecoveryRecord -Directory $directory -Scope $scope -Event 'operation-started' -Result 'activation-not-verified' -Required $true
++        # Only this token is returned to CMD. No key, argument string or exception text is logged.
++        Write-Output ([IO.Path]::GetFileName($directory))
++        return
++    }
++    if ($env:MAS_RECOVERY_RUN_ID -notmatch '^[a-fA-F0-9]{32}$') { throw 'Invalid recovery operation ID.' }
++    $directory = Join-Path (Join-Path $env:windir 'MAS-Safer-Recovery') $env:MAS_RECOVERY_RUN_ID
++    if ($env:MAS_RECOVERY_ACTION -eq 'end') {
++        $result = 'control-returned-activation-not-verified'
++        if ($env:error -or $env:error_ -or $env:MAS_RECOVERY_LOG_FAILED) { $result = 'control-returned-with-errors-or-incomplete-log' }
++        Write-RecoveryRecord -Directory $directory -Scope $scope -Event 'control-returned' -Result $result -Required $true
++    } elseif ($env:MAS_RECOVERY_ACTION -eq 'phase') {
++        if ($env:MAS_RECOVERY_EVENT -notin @('diagnostics','key-install-may-run','hwid-ticket-may-run','ohook-files-may-change','tsforge-processing','kms-processing')) { throw 'Unknown journal event.' }
++        Write-RecoveryRecord -Directory $directory -Scope $scope -Event $env:MAS_RECOVERY_EVENT -Result 'intent-not-outcome' -Required $true
++    } else { throw 'Unknown journal action.' }
++}
++
++:saferjournal:
+--- safer-r2/MAS/Separate-Files-Version/Activators/HWID_Activation.cmd
++++ safer-r3/MAS/Separate-Files-Version/Activators/HWID_Activation.cmd
+@@ -1,5 +1,7 @@
+ @set masver=3.14
+ @echo off
++@setlocal EnableExtensions DisableDelayedExpansion
++@for %%P in (%*) do @if /i "%%~P"=="/Plan" goto :mas_safer_plan
+ 
+ :: MAS 3.14 LOCAL SAFER BUILD - experimental; see README-SAFER.txt.
+ :: Set a specific switch to 1 only after reading its documented effects.
+@@ -7,6 +9,8 @@
+ set "MAS_SAFER_ALLOW_LICENSE_CLEANUP=0"
+ set "MAS_SAFER_ALLOW_REPAIRS=0"
+ set "MAS_SAFE_SELF=%~f0"
++set "MAS_RECOVERY_RUN_ID="
++set "MAS_RECOVERY_LOG_FAILED="
+ 
+ 
+ 
+@@ -494,6 +498,9 @@
+ ::  Windows License Manager Service
+ ::  Windows Management Instrumentation
+ 
++call :mas_safer_journal_begin HWID
++if errorlevel 1 (set error=1&goto :dk_done)
++call :mas_safer_journal_event diagnostics
+ call :dk_errorcheck
+ 
+ ::========================================================================================================================================
+@@ -580,6 +587,7 @@
+ if exist "%tdir%\*.xml" del /f /q "%tdir%\*.xml" %nul%
+ if exist "%ProgramData%\Microsoft\Windows\ClipSVC\Install\Migration\*" del /f /q "%ProgramData%\Microsoft\Windows\ClipSVC\Install\Migration\*" %nul%
+ 
++call :mas_safer_journal_event hwid-ticket-may-run
+ call :hwiddata ticket
+ 
+ copy /y /b "%tdir%\GenuineTicket" "%tdir%\GenuineTicket.xml" %nul%
+@@ -967,6 +975,7 @@
+ ::  Install Key
+ 
+ :dk_inskey
++call :mas_safer_journal_event key-install-may-run
+ 
+ if %_wmic% EQU 1 wmic path %sps% where __CLASS='%sps%' call InstallProductKey ProductKey="%key%" %nul%
+ if %_wmic% EQU 0 %psc% "try { $null=(([WMISEARCHER]'SELECT Version FROM %sps%').Get()).InstallProductKey('%key%'); exit 0 } catch { exit $_.Exception.InnerException.HResult }" %nul%
+@@ -1936,6 +1945,7 @@
+ ::========================================================================================================================================
+ 
+ :dk_done
++call :mas_safer_journal_end
+ 
+ echo:
+ if %_unattended%==1 timeout /t 2 & exit /b
+@@ -2144,3 +2154,242 @@
+ 
+ ::========================================================================================================================================
+ :: Leave empty line below
++
++exit /b
++:mas_safer_plan
++setlocal EnableExtensions DisableDelayedExpansion
++if /i not "%~1"=="/Plan" (
++echo /Plan must be the first argument. Mixed activation arguments were refused.
++exit /b 2
++)
++if not "%~3"=="" (
++echo Plan accepts only one optional scope: All, HWID, Ohook, TSforge or KMS.
++exit /b 2
++)
++set "MAS_SAFE_SELF=%~f0"
++set "MAS_PLAN_METHOD=%~2"
++set "MAS_PLAN_PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
++if exist "%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe" set "MAS_PLAN_PS=%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
++"%MAS_PLAN_PS%" -NoLogo -NoProfile -NonInteractive -Command "$ErrorActionPreference='Stop'; try { $b=[IO.File]::ReadAllText($env:MAS_SAFE_SELF) -split '(?m)^:saferplan:\r?$'; if ($b.Count -ne 3) { throw 'Invalid plan block' }; & ([scriptblock]::Create($b[1])); exit 0 } catch { Write-Error ('Plan unavailable: '+$_.Exception.Message); exit 2 }"
++exit /b %errorlevel%
++
++:mas_safer_journal_begin
++set "MAS_RECOVERY_SCOPE=%~1"
++set "MAS_RECOVERY_RUN_ID="
++set "MAS_RECOVERY_LOG_FAILED="
++set "MAS_RECOVERY_ACTION=begin"
++for /f "delims=" %%J in ('%psc% "$ErrorActionPreference='Stop'; try { $b=[IO.File]::ReadAllText($env:MAS_SAFE_SELF) -split '(?m)^:saferjournal:\r?$'; if ($b.Count -ne 3) { throw 'Invalid journal block' }; . ([scriptblock]::Create($b[1])); Invoke-BatchJournal } catch { [Console]::Error.WriteLine('Recovery journal could not be initialized. No activation phase was started.'); exit 1 }"') do set "MAS_RECOVERY_RUN_ID=%%J"
++if not defined MAS_RECOVERY_RUN_ID exit /b 1
++echo Recovery journal: %windir%\MAS-Safer-Recovery\%MAS_RECOVERY_RUN_ID%
++exit /b 0
++
++:mas_safer_journal_event
++set "MAS_RECOVERY_SAVED_RC=%errorlevel%"
++if not defined MAS_RECOVERY_RUN_ID exit /b %MAS_RECOVERY_SAVED_RC%
++set "MAS_RECOVERY_ACTION=phase"
++set "MAS_RECOVERY_EVENT=%~1"
++call :mas_safer_journal_write
++exit /b %MAS_RECOVERY_SAVED_RC%
++
++:mas_safer_journal_end
++if not defined MAS_RECOVERY_RUN_ID exit /b
++set "MAS_RECOVERY_ACTION=end"
++call :mas_safer_journal_write
++set "MAS_RECOVERY_RUN_ID="
++exit /b
++
++:mas_safer_journal_write
++%psc% "$ErrorActionPreference='Stop'; try { $b=[IO.File]::ReadAllText($env:MAS_SAFE_SELF) -split '(?m)^:saferjournal:\r?$'; if ($b.Count -ne 3) { throw 'Invalid journal block' }; . ([scriptblock]::Create($b[1])); Invoke-BatchJournal; exit 0 } catch { [Console]::Error.WriteLine('Recovery journal incomplete. Inspect backups; activation/recovery outcome is not implied.'); exit 1 }"
++if errorlevel 1 set "MAS_RECOVERY_LOG_FAILED=1"
++exit /b
++
++:saferplan:
++# Read-only inventory and conditional plan. Never imports or invokes activation code.
++$ErrorActionPreference = 'Stop'
++if ($PSVersionTable.PSVersion -lt [version]'5.1') { throw 'Plan view requires Windows PowerShell 5.1.' }
++$method = $env:MAS_PLAN_METHOD
++if ([string]::IsNullOrWhiteSpace($method)) {
++    $method = switch ([IO.Path]::GetFileName($env:MAS_SAFE_SELF)) {
++        'HWID_Activation.cmd' { 'HWID' }
++        'Ohook_Activation_AIO.cmd' { 'Ohook' }
++        'TSforge_Activation.cmd' { 'TSforge' }
++        'Online_KMS_Activation.cmd' { 'KMS' }
++        default { 'All' }
++    }
++}
++if ($method -notin @('All','HWID','Ohook','TSforge','KMS')) { throw 'Use /Plan with All, HWID, Ohook, TSforge or KMS. No activation was requested.' }
++$source = $env:MAS_SAFE_SELF
++if (-not [IO.File]::Exists($source)) { throw 'The source script could not be read.' }
++$sourceText = [IO.File]::ReadAllText($source)
++function Show([string]$line) { Write-Output $line }
++function Read-Registry([string]$path, [string[]]$names) {
++    foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64,[Microsoft.Win32.RegistryView]::Registry32)) {
++        $base = $null; $key = $null
++        try {
++            $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine,$view)
++            $key = $base.OpenSubKey($path,$false)
++            if ($key) {
++                foreach ($name in $names) {
++                    $value = $key.GetValue($name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
++                    if ($null -ne $value) {
++                        # Registry strings are data, never commands; remove control characters from display.
++                        Show ('  {0} {1}: {2}' -f $view,$name,([regex]::Replace([string]$value,'[\x00-\x1f\x7f]',' ')))
++                    }
++                }
++            }
++        } catch { Show ('  {0}: unavailable ({1})' -f $view,$_.Exception.GetType().Name) }
++        finally { if ($key) { $key.Dispose() }; if ($base) { $base.Dispose() } }
++    }
++}
++function Show-Flag([string]$name) {
++    $matches = [regex]::Matches($sourceText,'(?im)^set\s+"?'+[regex]::Escape($name)+'=([01])"?\s*$')
++    if ($matches.Count -eq 1) { Show ('  {0}={1}' -f $name,$matches[0].Groups[1].Value) }
++    else { Show ('  {0}: source-dependent or unavailable; inspect the chosen module' -f $name) }
++}
++Show 'MAS safer r3 - PLAN ONLY'
++Show ('Source: '+[IO.Path]::GetFileName($source))
++Show ('Selected scope: '+$method)
++Show 'No activation, elevation, service control, registry writes, downloads or journal creation is performed by this mode.'
++Show 'This is a conditional plan, not a successful preflight or a guarantee of activation.'
++Show ''
++Show 'Windows inventory (read-only):'
++Read-Registry 'SOFTWARE\Microsoft\Windows NT\CurrentVersion' @('ProductName','EditionID','CurrentBuildNumber','DisplayVersion','UBR')
++Show ('Process architecture: '+$env:PROCESSOR_ARCHITECTURE)
++try {
++    $drive = New-Object IO.DriveInfo([IO.Path]::GetPathRoot($env:windir))
++    Show ('Free space on Windows volume: {0:N2} GiB (no write probe)' -f ($drive.AvailableFreeSpace/1GB))
++} catch { Show 'Free space: unavailable; not treated as sufficient.' }
++Show ''
++Show 'Source defaults (runtime options and product discovery may change the actual path):'
++foreach ($flag in 'MAS_SAFER_ALLOW_PUBLIC_KMS','MAS_SAFER_ALLOW_LICENSE_CLEANUP','MAS_SAFER_ALLOW_REPAIRS','_NoEditionChange','_norentsk') { Show-Flag $flag }
++Show ''
++if ($method -in @('All','HWID')) {
++    Show 'HWID - possible actions when explicitly activated later:'
++    Show '  Inspect Windows edition and existing license; start required services.'
++    Show '  Install a product key, prepare/import a ticket and contact activation services.'
++    Show '  Automatic edition/region changes are disabled by safer defaults.'
++    Show '  Key/ticket/service changes are not covered by automatic file rollback.'
++}
++if ($method -in @('All','Ohook','TSforge','KMS')) {
++    Show ''
++    Show 'Office inventory (C2R registry only; an absent entry does NOT exclude MSI/UWP Office):'
++    Read-Registry 'SOFTWARE\Microsoft\Office\ClickToRun\Configuration' @('InstallationPath','Platform','VersionToReport','ProductReleaseIds')
++    Show 'Office MSI/UWP products and exact hook targets: not resolved in plan-only mode.'
++}
++if ($method -in @('All','Ohook')) {
++    Show ''
++    Show 'Ohook - possible actions when explicitly installed/uninstalled later:'
++    Show '  Resolve C2R/MSI/OSPP paths; check existing DLLs, links and Microsoft signatures.'
++    Show '  Install license/key data; back up recognized DLLs and link metadata.'
++    Show '  Stage verified DLL bytes; replace DLLs/create links; attempt file rollback on failure.'
++    Show '  Uninstall removes recognized forwarding links and restores recognized OSPPC files.'
++    Show '  Conditional targets: Office sppc.dll/sppcs.dll and shared OfficeSoftwareProtectionPlatform\OSPPC.DLL.'
++    Show '  Prior key/registry changes are not undone by DLL rollback.'
++}
++if ($method -in @('All','TSforge')) {
++    Show ''
++    Show 'TSforge - possible actions when explicitly activated later:'
++    Show '  Resolve the licensing store/version and selected product IDs; stop/restart SPP as needed.'
++    Show '  For PKEY2005, validate physical/token stores before removing keys; reopen after licensing API changes.'
++    Show '  Prepare backups and encrypted store outputs; replace stores; attempt per-file recovery on failure.'
++    Show '  Write associated registry data and invalidate cache; perform the selected activation method.'
++    Show '  Candidate store locations (not opened, parsed, hashed or locked by plan mode):'
++    foreach ($relative in 'System32\spp\store','System32\spp\store\2.0','System32\spp\store_test\2.0','ServiceProfiles\NetworkService\AppData\Roaming\Microsoft\SoftwareProtectionPlatform') {
++        Show ('    '+[IO.Path]::Combine($env:windir,$relative))
++    }
++    Show '  A registry-configured TokenStore or legacy Vista store may be used instead.'
++    Show '  Store schema, decryptability, API availability and full-state rollback: NOT verified here.'
++}
++if ($method -in @('All','KMS')) {
++    Show ''
++    Show 'KMS - possible actions when explicitly activated later:'
++    Show '  Install appropriate keys, configure the selected host/port and contact that host.'
++    Show '  With safer defaults and no explicit trusted host, activation is refused.'
++    Show '  Optional renewal-task creation requires different settings; task cleanup may still run.'
++    Show '  Key, host, registry and scheduler changes do not have automatic full rollback.'
++}
++Show ''
++Show 'Journal and recovery limits:'
++Show ('  Future mutation journals: '+[IO.Path]::Combine($env:windir,'MAS-Safer-Recovery'))
++Show ('  Ohook backup manifests/journals: '+[IO.Path]::Combine($env:windir,'MAS-Safer-Backups'))
++Show '  Store .bak/.tmp/.restore files are beside the affected store; journals list exact paths.'
++Show '  No terminal event means interrupted or unknown, never success.'
++Show '  File rollback does not roll back product keys, the registry, service state or remote activation.'
++Show ''
++Show 'Not checked: effective write/delete permissions, backup creation, DLL trust/network certificate checks,'
++Show 'store compatibility, licensing service health, network reachability, activation or recovery behavior.'
++Show 'Plan view ends here. It never continues into activation.'
++
++:saferplan:
++:saferjournal:
++# Definitions only. Loading this block does not create files.
++function Assert-RecoveryDirectory([string]$path) {
++    if (-not [IO.Path]::IsPathRooted($path) -or -not [IO.Directory]::Exists($path)) { throw 'Invalid recovery directory.' }
++    for ($d = Get-Item -LiteralPath $path -Force; $null -ne $d; $d = $d.Parent) {
++        if ($d.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Redirected recovery directory refused.' }
++    }
++}
++function New-RecoveryFolder {
++    $root = Join-Path $env:windir 'MAS-Safer-Recovery'
++    Assert-RecoveryDirectory $env:windir
++    $acl = New-Object Security.AccessControl.DirectorySecurity
++    $acl.SetAccessRuleProtection($true,$false)
++    foreach ($sid in 'S-1-5-18','S-1-5-32-544') {
++        $identity = New-Object Security.Principal.SecurityIdentifier($sid)
++        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($identity,'FullControl','ContainerInherit,ObjectInherit','None','Allow')))
++    }
++    if (-not [IO.Directory]::Exists($root)) { [void][IO.Directory]::CreateDirectory($root,$acl) }
++    Assert-RecoveryDirectory $root
++    Set-Acl -LiteralPath $root -AclObject $acl
++    $directory = Join-Path $root ([guid]::NewGuid().ToString('N'))
++    [void][IO.Directory]::CreateDirectory($directory,$acl)
++    return $directory
++}
++function Write-RecoveryRecord {
++    param([string]$Directory,[string]$Scope,[string]$Event,[string]$Item='',
++          [string]$Backup='',[string]$Auxiliary='',[string]$Sha256='',
++          [string]$Result='',[bool]$Required=$false)
++    try {
++        Assert-RecoveryDirectory $Directory
++        $path = Join-Path $Directory 'events.jsonl'
++        if ([IO.File]::Exists($path) -and (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { throw 'Redirected journal refused.' }
++        $parent = $env:MAS_RECOVERY_RUN_ID
++        if ($parent -notmatch '^[a-fA-F0-9]{32}$') { $parent = '' }
++        if ($parent -eq [IO.Path]::GetFileName($Directory)) { $parent = '' }
++        $record = [ordered]@{schema=1;utc=[DateTime]::UtcNow.ToString('o');operation=[IO.Path]::GetFileName($Directory);
++            parent=$parent;scope=$Scope;event=$Event;item=$Item;backup=$Backup;auxiliary=$Auxiliary;sha256=$Sha256;result=$Result}
++        $bytes = [Text.Encoding]::UTF8.GetBytes(($record | ConvertTo-Json -Compress -Depth 3)+[Environment]::NewLine)
++        $stream = New-Object IO.FileStream($path,[IO.FileMode]::Append,[IO.FileAccess]::Write,[IO.FileShare]::Read,4096,[IO.FileOptions]::WriteThrough)
++        try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush() } finally { $stream.Dispose() }
++    } catch {
++        if ($Required) { throw 'Recovery journal could not be written; the next mutation was not started.' }
++        try { Write-Warning ('Recovery journal incomplete: '+$Directory+'. Inspect backups; no recovery outcome is implied.') -WarningAction Continue }
++        catch { # A closed output stream must not interrupt rollback either.
++        }
++    }
++}
++function Invoke-BatchJournal {
++    $ErrorActionPreference = 'Stop'
++    if ($PSVersionTable.PSVersion -lt [version]'5.1') { throw 'Recovery journal requires Windows PowerShell 5.1.' }
++    $scope = $env:MAS_RECOVERY_SCOPE
++    if ($scope -notin @('HWID','Ohook','TSforge','KMS','Ohook-Uninstall','KMS-Uninstall')) { throw 'Unknown journal scope.' }
++    if ($env:MAS_RECOVERY_ACTION -eq 'begin') {
++        $directory = New-RecoveryFolder
++        Write-RecoveryRecord -Directory $directory -Scope $scope -Event 'operation-started' -Result 'activation-not-verified' -Required $true
++        # Only this token is returned to CMD. No key, argument string or exception text is logged.
++        Write-Output ([IO.Path]::GetFileName($directory))
++        return
++    }
++    if ($env:MAS_RECOVERY_RUN_ID -notmatch '^[a-fA-F0-9]{32}$') { throw 'Invalid recovery operation ID.' }
++    $directory = Join-Path (Join-Path $env:windir 'MAS-Safer-Recovery') $env:MAS_RECOVERY_RUN_ID
++    if ($env:MAS_RECOVERY_ACTION -eq 'end') {
++        $result = 'control-returned-activation-not-verified'
++        if ($env:error -or $env:error_ -or $env:MAS_RECOVERY_LOG_FAILED) { $result = 'control-returned-with-errors-or-incomplete-log' }
++        Write-RecoveryRecord -Directory $directory -Scope $scope -Event 'control-returned' -Result $result -Required $true
++    } elseif ($env:MAS_RECOVERY_ACTION -eq 'phase') {
++        if ($env:MAS_RECOVERY_EVENT -notin @('diagnostics','key-install-may-run','hwid-ticket-may-run','ohook-files-may-change','tsforge-processing','kms-processing')) { throw 'Unknown journal event.' }
++        Write-RecoveryRecord -Directory $directory -Scope $scope -Event $env:MAS_RECOVERY_EVENT -Result 'intent-not-outcome' -Required $true
++    } else { throw 'Unknown journal action.' }
++}
++
++:saferjournal:
+--- safer-r2/MAS/Separate-Files-Version/Activators/Ohook_Activation_AIO.cmd
++++ safer-r3/MAS/Separate-Files-Version/Activators/Ohook_Activation_AIO.cmd
+@@ -1,5 +1,7 @@
+ @set masver=3.14
+ @echo off
++@setlocal EnableExtensions DisableDelayedExpansion
++@for %%P in (%*) do @if /i "%%~P"=="/Plan" goto :mas_safer_plan
+ 
+ :: MAS 3.14 LOCAL SAFER BUILD - experimental; see README-SAFER.txt.
+ :: Set a specific switch to 1 only after reading its documented effects.
+@@ -7,6 +9,8 @@
+ set "MAS_SAFER_ALLOW_LICENSE_CLEANUP=0"
+ set "MAS_SAFER_ALLOW_REPAIRS=0"
+ set "MAS_SAFE_SELF=%~f0"
++set "MAS_RECOVERY_RUN_ID="
++set "MAS_RECOVERY_LOG_FAILED="
+ 
+ 
+ 
+@@ -482,6 +486,9 @@
+ 
+ set notwinact=1
+ set ohookact=1
++call :mas_safer_journal_begin Ohook
++if errorlevel 1 (set error=1&goto :dk_done)
++call :mas_safer_journal_event diagnostics
+ call :dk_errorcheck
+ 
+ call :oh_setspp
+@@ -792,6 +799,8 @@
+ ::========================================================================================================================================
+ 
+ :oh_uninstall
++call :mas_safer_journal_begin Ohook-Uninstall
++if errorlevel 1 (set error=1&goto :dk_done)
+ 
+ cls
+ if not defined terminal mode 145, 32
+@@ -1036,6 +1045,7 @@
+ ::========================================================================================================================================
+ 
+ :oh_hookinstall
++call :mas_safer_journal_event ohook-files-may-change
+ set ierror=
+ set hasherror=
+ set "MAS_SAFE_SELF=%~f0"
+@@ -1045,6 +1055,7 @@
+ goto :oh_hookinstall_error
+ 
+ :oh_hookinstall_ospp
++call :mas_safer_journal_event ohook-files-may-change
+ set ierror=
+ set hasherror=
+ set "MAS_SAFE_SELF=%~f0"
+@@ -1535,6 +1546,7 @@
+ ::  Install Key
+ 
+ :dk_inskey
++call :mas_safer_journal_event key-install-may-run
+ 
+ if %_wmic% EQU 1 wmic path %sps% where __CLASS='%sps%' call InstallProductKey ProductKey="%key%" %nul%
+ if %_wmic% EQU 0 %psc% "try { $null=(([WMISEARCHER]'SELECT Version FROM %sps%').Get()).InstallProductKey('%key%'); exit 0 } catch { exit $_.Exception.InnerException.HResult }" %nul%
+@@ -2456,6 +2468,7 @@
+ ::========================================================================================================================================
+ 
+ :dk_done
++call :mas_safer_journal_end
+ 
+ echo:
+ if %_unattended%==1 timeout /t 2 & exit /b
+@@ -3112,6 +3125,9 @@
+ :saferohook:
+ $ErrorActionPreference = 'Stop'
+ if ($PSVersionTable.PSVersion -lt [version]'5.1') { throw 'This local safer build requires Windows PowerShell 5.1.' }
++$journalBlock = [IO.File]::ReadAllText($env:MAS_SAFE_SELF) -split '(?m)^:saferjournal:\r?$'
++if ($journalBlock.Count -ne 3) { throw 'Invalid recovery journal helper block.' }
++. ([scriptblock]::Create($journalBlock[1])) # Definitions only; plan/preflight creates no journal.
+ $hashes = @{
+     'sppc32.dll' = '09865ea5993215965e8f27a74b8a41d15fd0f60f5f404cb7a8b3c7757acdab02'
+     'sppc64.dll' = '393a1fa26deb3663854e41f2b687c188a9eacd87b23f17ea09422c4715cb5a9f'
+@@ -3269,6 +3285,11 @@
+ Set-Acl -LiteralPath $backupRoot -AclObject $acl
+ $backup = Join-Path $backupRoot ([guid]::NewGuid().ToString('N'))
+ [void][IO.Directory]::CreateDirectory($backup)
++Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'operation-started' -Result $env:MAS_SAFE_ACTION -Required $true
++$attempted = New-Object Collections.Generic.List[int]
++$staged = @{}
++$complete = $false
++try {
+ foreach ($plan in $plans) {
+     $item = Item $plan.Path
+     $saved = [pscustomobject]@{Path=$plan.Path; Existed=[bool]$item; Link=$null; Backup=$null; Hash=$null; Acl=$null}
+@@ -3283,12 +3304,9 @@
+         }
+     }
+     $snapshots.Add($saved)
++    Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'backup-recorded' -Item $saved.Path -Backup $saved.Backup -Auxiliary $saved.Link -Sha256 $saved.Hash -Result ('existed='+$saved.Existed) -Required $true
+ }
+ $snapshots | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $backup 'manifest.json') -Encoding UTF8
+-$attempted = New-Object Collections.Generic.List[int]
+-$staged = @{}
+-$complete = $false
+-try {
+     # Prepare every replacement before touching any destination.
+     for ($i=0; $i -lt $plans.Count; $i++) {
+         $plan = $plans[$i]
+@@ -3300,6 +3318,7 @@
+             $sha = [Security.Cryptography.SHA256]::Create()
+             try { $expected = ([BitConverter]::ToString($sha.ComputeHash([byte[]]$plan.Data))).Replace('-','') } finally { $sha.Dispose() }
+             if ((Get-FileHash -LiteralPath $tmp).Hash -ne $expected) { throw 'Staged DLL verification failed.' }
++            Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'output-staged' -Item $plan.Path -Auxiliary $tmp -Sha256 $expected -Required $true
+         }
+     }
+     for ($i=0; $i -lt $plans.Count; $i++) {
+@@ -3311,6 +3330,7 @@
+             elseif (-not $current -or $current.PSIsContainer -or ($current.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+                     (Get-FileHash -LiteralPath $plan.Path).Hash -ne $saved.Hash) { throw 'File changed after backup.' }
+         } elseif ($current) { throw 'Destination appeared after preflight.' }
++        Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'mutation-intent' -Item $plan.Path -Backup $saved.Backup -Auxiliary ([string]$staged[$i]) -Result $plan.Kind -Required $true
+         $attempted.Add($i) # Only now may a native operation partially change its destination.
+         if ($plan.Kind -eq 'file') {
+             if ($current) { [IO.File]::Replace($staged[$i],$plan.Path,$staged[$i]+'.displaced') }
+@@ -3318,16 +3338,20 @@
+         } elseif ($plan.Kind -eq 'link') {
+             [void](New-Item -ItemType SymbolicLink -Path $plan.Path -Target $plan.Data)
+         } else { Remove-Item -LiteralPath $plan.Path -Force }
++        Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'mutation-returned' -Item $plan.Path -Result 'file-operation-only'
+     }
+     'complete' | Set-Content -LiteralPath (Join-Path $backup 'status.txt')
+     $complete = $true
++    Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'files-committed' -Result 'activation-not-verified'
+     Write-Host "Verified Ohook files updated. Backups: $backup"
+ } catch {
+     $failure = $_
+     $rollbackErrors = @()
++    Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'operation-failed' -Result $failure.Exception.GetType().FullName
+     for ($a=$attempted.Count-1; $a -ge 0; $a--) {
+         $i=$attempted[$a]; $saved=$snapshots[$i]; $plan=$plans[$i]
+         try {
++            Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'rollback-intent' -Item $saved.Path -Backup $saved.Backup -Result 'recovery-pending'
+             Assert-Directory (Split-Path -Parent $saved.Path)
+             $current = Item $saved.Path
+             if ($saved.Existed) {
+@@ -3337,7 +3361,10 @@
+                 }
+                 else {
+                     if ($current -and ($current.PSIsContainer -or ($current.Attributes -band [IO.FileAttributes]::ReparsePoint))) { throw 'Unexpected rollback destination; preserving it.' }
+-                    if ($current -and (Get-FileHash -LiteralPath $saved.Path).Hash -eq $saved.Hash) { continue }
++                    if ($current -and (Get-FileHash -LiteralPath $saved.Path).Hash -eq $saved.Hash) {
++                        Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'rollback-item' -Item $saved.Path -Sha256 $saved.Hash -Result 'unchanged'
++                        continue
++                    }
+                     # Never delete the current DLL before preparing its complete replacement.
+                     $restore = $saved.Path + '.mas-restore-' + [guid]::NewGuid().ToString('N')
+                     if ((Get-FileHash -LiteralPath $saved.Backup).Hash -ne $saved.Hash) { throw 'Recovery backup hash mismatch.' }
+@@ -3346,6 +3373,7 @@
+                     $fileAcl=New-Object Security.AccessControl.FileSecurity
+                     $fileAcl.SetSecurityDescriptorSddlForm($saved.Acl,[Security.AccessControl.AccessControlSections]::Access)
+                     Set-Acl -LiteralPath $restore -AclObject $fileAcl
++                    Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'recovery-staged' -Item $saved.Path -Backup $saved.Backup -Auxiliary $restore -Sha256 $saved.Hash
+                     if ($current) { [IO.File]::Replace($restore,$saved.Path,$restore+'.displaced') }
+                     else { [IO.File]::Move($restore,$saved.Path) }
+                 }
+@@ -3360,16 +3388,264 @@
+                 } else { throw 'Unexpected rollback operation.' }
+                 Remove-Item -LiteralPath $saved.Path -Force
+             }
+-        } catch { $rollbackErrors += $_.Exception.Message }
++            Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'rollback-item' -Item $saved.Path -Backup $saved.Backup -Result 'restored-or-removed-new-object'
++        } catch {
++            $rollbackErrors += $_.Exception.Message
++            Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'rollback-item' -Item $saved.Path -Backup $saved.Backup -Result ('manual-recovery:'+$_.Exception.GetType().FullName)
++        }
+     }
++    $rollbackResult = if ($rollbackErrors.Count) { 'manual-recovery-required' } else { 'restored-or-unchanged; licensing-state-not-restored' }
++    Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'file-rollback-ended' -Result $rollbackResult
+     throw "Ohook operation failed: $($failure.Exception.Message). Backups: $backup. File rollback errors: $($rollbackErrors -join '; '). Licensing API/registry changes are not rolled back."
+ } finally {
+     if ($complete) {
+         foreach ($tmp in $staged.Values) {
+             foreach ($path in @($tmp,($tmp+'.displaced'))) {
+-                try { if (Item $path) { Remove-Item -LiteralPath $path -Force } } catch { Write-Warning "Retained staging file: $path" }
++                try { if (Item $path) { Remove-Item -LiteralPath $path -Force } } catch {
++                    Write-RecoveryRecord -Directory $backup -Scope 'Ohook-files' -Event 'cleanup-retained' -Item $path -Result $_.Exception.GetType().FullName
++                    Write-Warning "Retained staging file: $path"
++                }
+             }
+         }
+     }
+ }
+ :saferohook:
++
++exit /b
++:mas_safer_plan
++setlocal EnableExtensions DisableDelayedExpansion
++if /i not "%~1"=="/Plan" (
++echo /Plan must be the first argument. Mixed activation arguments were refused.
++exit /b 2
++)
++if not "%~3"=="" (
++echo Plan accepts only one optional scope: All, HWID, Ohook, TSforge or KMS.
++exit /b 2
++)
++set "MAS_SAFE_SELF=%~f0"
++set "MAS_PLAN_METHOD=%~2"
++set "MAS_PLAN_PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
++if exist "%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe" set "MAS_PLAN_PS=%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
++"%MAS_PLAN_PS%" -NoLogo -NoProfile -NonInteractive -Command "$ErrorActionPreference='Stop'; try { $b=[IO.File]::ReadAllText($env:MAS_SAFE_SELF) -split '(?m)^:saferplan:\r?$'; if ($b.Count -ne 3) { throw 'Invalid plan block' }; & ([scriptblock]::Create($b[1])); exit 0 } catch { Write-Error ('Plan unavailable: '+$_.Exception.Message); exit 2 }"
++exit /b %errorlevel%
++
++:mas_safer_journal_begin
++set "MAS_RECOVERY_SCOPE=%~1"
++set "MAS_RECOVERY_RUN_ID="
++set "MAS_RECOVERY_LOG_FAILED="
++set "MAS_RECOVERY_ACTION=begin"
++for /f "delims=" %%J in ('%psc% "$ErrorActionPreference='Stop'; try { $b=[IO.File]::ReadAllText($env:MAS_SAFE_SELF) -split '(?m)^:saferjournal:\r?$'; if ($b.Count -ne 3) { throw 'Invalid journal block' }; . ([scriptblock]::Create($b[1])); Invoke-BatchJournal } catch { [Console]::Error.WriteLine('Recovery journal could not be initialized. No activation phase was started.'); exit 1 }"') do set "MAS_RECOVERY_RUN_ID=%%J"
++if not defined MAS_RECOVERY_RUN_ID exit /b 1
++echo Recovery journal: %windir%\MAS-Safer-Recovery\%MAS_RECOVERY_RUN_ID%
++exit /b 0
++
++:mas_safer_journal_event
++set "MAS_RECOVERY_SAVED_RC=%errorlevel%"
++if not defined MAS_RECOVERY_RUN_ID exit /b %MAS_RECOVERY_SAVED_RC%
++set "MAS_RECOVERY_ACTION=phase"
++set "MAS_RECOVERY_EVENT=%~1"
++call :mas_safer_journal_write
++exit /b %MAS_RECOVERY_SAVED_RC%
++
++:mas_safer_journal_end
++if not defined MAS_RECOVERY_RUN_ID exit /b
++set "MAS_RECOVERY_ACTION=end"
++call :mas_safer_journal_write
++set "MAS_RECOVERY_RUN_ID="
++exit /b
++
++:mas_safer_journal_write
++%psc% "$ErrorActionPreference='Stop'; try { $b=[IO.File]::ReadAllText($env:MAS_SAFE_SELF) -split '(?m)^:saferjournal:\r?$'; if ($b.Count -ne 3) { throw 'Invalid journal block' }; . ([scriptblock]::Create($b[1])); Invoke-BatchJournal; exit 0 } catch { [Console]::Error.WriteLine('Recovery journal incomplete. Inspect backups; activation/recovery outcome is not implied.'); exit 1 }"
++if errorlevel 1 set "MAS_RECOVERY_LOG_FAILED=1"
++exit /b
++
++:saferplan:
++# Read-only inventory and conditional plan. Never imports or invokes activation code.
++$ErrorActionPreference = 'Stop'
++if ($PSVersionTable.PSVersion -lt [version]'5.1') { throw 'Plan view requires Windows PowerShell 5.1.' }
++$method = $env:MAS_PLAN_METHOD
++if ([string]::IsNullOrWhiteSpace($method)) {
++    $method = switch ([IO.Path]::GetFileName($env:MAS_SAFE_SELF)) {
++        'HWID_Activation.cmd' { 'HWID' }
++        'Ohook_Activation_AIO.cmd' { 'Ohook' }
++        'TSforge_Activation.cmd' { 'TSforge' }
++        'Online_KMS_Activation.cmd' { 'KMS' }
++        default { 'All' }
++    }
++}
++if ($method -notin @('All','HWID','Ohook','TSforge','KMS')) { throw 'Use /Plan with All, HWID, Ohook, TSforge or KMS. No activation was requested.' }
++$source = $env:MAS_SAFE_SELF
++if (-not [IO.File]::Exists($source)) { throw 'The source script could not be read.' }
++$sourceText = [IO.File]::ReadAllText($source)
++function Show([string]$line) { Write-Output $line }
++function Read-Registry([string]$path, [string[]]$names) {
++    foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64,[Microsoft.Win32.RegistryView]::Registry32)) {
++        $base = $null; $key = $null
++        try {
++            $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine,$view)
++            $key = $base.OpenSubKey($path,$false)
++            if ($key) {
++                foreach ($name in $names) {
++                    $value = $key.GetValue($name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
++                    if ($null -ne $value) {
++                        # Registry strings are data, never commands; remove control characters from display.
++                        Show ('  {0} {1}: {2}' -f $view,$name,([regex]::Replace([string]$value,'[\x00-\x1f\x7f]',' ')))
++                    }
++                }
++            }
++        } catch { Show ('  {0}: unavailable ({1})' -f $view,$_.Exception.GetType().Name) }
++        finally { if ($key) { $key.Dispose() }; if ($base) { $base.Dispose() } }
++    }
++}
++function Show-Flag([string]$name) {
++    $matches = [regex]::Matches($sourceText,'(?im)^set\s+"?'+[regex]::Escape($name)+'=([01])"?\s*$')
++    if ($matches.Count -eq 1) { Show ('  {0}={1}' -f $name,$matches[0].Groups[1].Value) }
++    else { Show ('  {0}: source-dependent or unavailable; inspect the chosen module' -f $name) }
++}
++Show 'MAS safer r3 - PLAN ONLY'
++Show ('Source: '+[IO.Path]::GetFileName($source))
++Show ('Selected scope: '+$method)
++Show 'No activation, elevation, service control, registry writes, downloads or journal creation is performed by this mode.'
++Show 'This is a conditional plan, not a successful preflight or a guarantee of activation.'
++Show ''
++Show 'Windows inventory (read-only):'
++Read-Registry 'SOFTWARE\Microsoft\Windows NT\CurrentVersion' @('ProductName','EditionID','CurrentBuildNumber','DisplayVersion','UBR')
++Show ('Process architecture: '+$env:PROCESSOR_ARCHITECTURE)
++try {
++    $drive = New-Object IO.DriveInfo([IO.Path]::GetPathRoot($env:windir))
++    Show ('Free space on Windows volume: {0:N2} GiB (no write probe)' -f ($drive.AvailableFreeSpace/1GB))
++} catch { Show 'Free space: unavailable; not treated as sufficient.' }
++Show ''
++Show 'Source defaults (runtime options and product discovery may change the actual path):'
++foreach ($flag in 'MAS_SAFER_ALLOW_PUBLIC_KMS','MAS_SAFER_ALLOW_LICENSE_CLEANUP','MAS_SAFER_ALLOW_REPAIRS','_NoEditionChange','_norentsk') { Show-Flag $flag }
++Show ''
++if ($method -in @('All','HWID')) {
++    Show 'HWID - possible actions when explicitly activated later:'
++    Show '  Inspect Windows edition and existing license; start required services.'
++    Show '  Install a product key, prepare/import a ticket and contact activation services.'
++    Show '  Automatic edition/region changes are disabled by safer defaults.'
++    Show '  Key/ticket/service changes are not covered by automatic file rollback.'
++}
++if ($method -in @('All','Ohook','TSforge','KMS')) {
++    Show ''
++    Show 'Office inventory (C2R registry only; an absent entry does NOT exclude MSI/UWP Office):'
++    Read-Registry 'SOFTWARE\Microsoft\Office\ClickToRun\Configuration' @('InstallationPath','Platform','VersionToReport','ProductReleaseIds')
++    Show 'Office MSI/UWP products and exact hook targets: not resolved in plan-only mode.'
++}
++if ($method -in @('All','Ohook')) {
++    Show ''
++    Show 'Ohook - possible actions when explicitly installed/uninstalled later:'
++    Show '  Resolve C2R/MSI/OSPP paths; check existing DLLs, links and Microsoft signatures.'
++    Show '  Install license/key data; back up recognized DLLs and link metadata.'
++    Show '  Stage verified DLL bytes; replace DLLs/create links; attempt file rollback on failure.'
++    Show '  Uninstall removes recognized forwarding links and restores recognized OSPPC files.'
++    Show '  Conditional targets: Office sppc.dll/sppcs.dll and shared OfficeSoftwareProtectionPlatform\OSPPC.DLL.'
++    Show '  Prior key/registry changes are not undone by DLL rollback.'
++}
++if ($method -in @('All','TSforge')) {
++    Show ''
++    Show 'TSforge - possible actions when explicitly activated later:'
++    Show '  Resolve the licensing store/version and selected product IDs; stop/restart SPP as needed.'
++    Show '  For PKEY2005, validate physical/token stores before removing keys; reopen after licensing API changes.'
++    Show '  Prepare backups and encrypted store outputs; replace stores; attempt per-file recovery on failure.'
++    Show '  Write associated registry data and invalidate cache; perform the selected activation method.'
++    Show '  Candidate store locations (not opened, parsed, hashed or locked by plan mode):'
++    foreach ($relative in 'System32\spp\store','System32\spp\store\2.0','System32\spp\store_test\2.0','ServiceProfiles\NetworkService\AppData\Roaming\Microsoft\SoftwareProtectionPlatform') {
++        Show ('    '+[IO.Path]::Combine($env:windir,$relative))
++    }
++    Show '  A registry-configured TokenStore or legacy Vista store may be used instead.'
++    Show '  Store schema, decryptability, API availability and full-state rollback: NOT verified here.'
++}
++if ($method -in @('All','KMS')) {
++    Show ''
++    Show 'KMS - possible actions when explicitly activated later:'
++    Show '  Install appropriate keys, configure the selected host/port and contact that host.'
++    Show '  With safer defaults and no explicit trusted host, activation is refused.'
++    Show '  Optional renewal-task creation requires different settings; task cleanup may still run.'
++    Show '  Key, host, registry and scheduler changes do not have automatic full rollback.'
++}
++Show ''
++Show 'Journal and recovery limits:'
++Show ('  Future mutation journals: '+[IO.Path]::Combine($env:windir,'MAS-Safer-Recovery'))
++Show ('  Ohook backup manifests/journals: '+[IO.Path]::Combine($env:windir,'MAS-Safer-Backups'))
++Show '  Store .bak/.tmp/.restore files are beside the affected store; journals list exact paths.'
++Show '  No terminal event means interrupted or unknown, never success.'
++Show '  File rollback does not roll back product keys, the registry, service state or remote activation.'
++Show ''
++Show 'Not checked: effective write/delete permissions, backup creation, DLL trust/network certificate checks,'
++Show 'store compatibility, licensing service health, network reachability, activation or recovery behavior.'
++Show 'Plan view ends here. It never continues into activation.'
++
++:saferplan:
++:saferjournal:
++# Definitions only. Loading this block does not create files.
++function Assert-RecoveryDirectory([string]$path) {
++    if (-not [IO.Path]::IsPathRooted($path) -or -not [IO.Directory]::Exists($path)) { throw 'Invalid recovery directory.' }
++    for ($d = Get-Item -LiteralPath $path -Force; $null -ne $d; $d = $d.Parent) {
++        if ($d.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Redirected recovery directory refused.' }
++    }
++}
++function New-RecoveryFolder {
++    $root = Join-Path $env:windir 'MAS-Safer-Recovery'
++    Assert-RecoveryDirectory $env:windir
++    $acl = New-Object Security.AccessControl.DirectorySecurity
++    $acl.SetAccessRuleProtection($true,$false)
++    foreach ($sid in 'S-1-5-18','S-1-5-32-544') {
++        $identity = New-Object Security.Principal.SecurityIdentifier($sid)
++        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($identity,'FullControl','ContainerInherit,ObjectInherit','None','Allow')))
++    }
++    if (-not [IO.Directory]::Exists($root)) { [void][IO.Directory]::CreateDirectory($root,$acl) }
++    Assert-RecoveryDirectory $root
++    Set-Acl -LiteralPath $root -AclObject $acl
++    $directory = Join-Path $root ([guid]::NewGuid().ToString('N'))
++    [void][IO.Directory]::CreateDirectory($directory,$acl)
++    return $directory
++}
++function Write-RecoveryRecord {
++    param([string]$Directory,[string]$Scope,[string]$Event,[string]$Item='',
++          [string]$Backup='',[string]$Auxiliary='',[string]$Sha256='',
++          [string]$Result='',[bool]$Required=$false)
++    try {
++        Assert-RecoveryDirectory $Directory
++        $path = Join-Path $Directory 'events.jsonl'
++        if ([IO.File]::Exists($path) -and (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { throw 'Redirected journal refused.' }
++        $parent = $env:MAS_RECOVERY_RUN_ID
++        if ($parent -notmatch '^[a-fA-F0-9]{32}$') { $parent = '' }
++        if ($parent -eq [IO.Path]::GetFileName($Directory)) { $parent = '' }
++        $record = [ordered]@{schema=1;utc=[DateTime]::UtcNow.ToString('o');operation=[IO.Path]::GetFileName($Directory);
++            parent=$parent;scope=$Scope;event=$Event;item=$Item;backup=$Backup;auxiliary=$Auxiliary;sha256=$Sha256;result=$Result}
++        $bytes = [Text.Encoding]::UTF8.GetBytes(($record | ConvertTo-Json -Compress -Depth 3)+[Environment]::NewLine)
++        $stream = New-Object IO.FileStream($path,[IO.FileMode]::Append,[IO.FileAccess]::Write,[IO.FileShare]::Read,4096,[IO.FileOptions]::WriteThrough)
++        try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush() } finally { $stream.Dispose() }
++    } catch {
++        if ($Required) { throw 'Recovery journal could not be written; the next mutation was not started.' }
++        try { Write-Warning ('Recovery journal incomplete: '+$Directory+'. Inspect backups; no recovery outcome is implied.') -WarningAction Continue }
++        catch { # A closed output stream must not interrupt rollback either.
++        }
++    }
++}
++function Invoke-BatchJournal {
++    $ErrorActionPreference = 'Stop'
++    if ($PSVersionTable.PSVersion -lt [version]'5.1') { throw 'Recovery journal requires Windows PowerShell 5.1.' }
++    $scope = $env:MAS_RECOVERY_SCOPE
++    if ($scope -notin @('HWID','Ohook','TSforge','KMS','Ohook-Uninstall','KMS-Uninstall')) { throw 'Unknown journal scope.' }
++    if ($env:MAS_RECOVERY_ACTION -eq 'begin') {
++        $directory = New-RecoveryFolder
++        Write-RecoveryRecord -Directory $directory -Scope $scope -Event 'operation-started' -Result 'activation-not-verified' -Required $true
++        # Only this token is returned to CMD. No key, argument string or exception text is logged.
++        Write-Output ([IO.Path]::GetFileName($directory))
++        return
++    }
++    if ($env:MAS_RECOVERY_RUN_ID -notmatch '^[a-fA-F0-9]{32}$') { throw 'Invalid recovery operation ID.' }
++    $directory = Join-Path (Join-Path $env:windir 'MAS-Safer-Recovery') $env:MAS_RECOVERY_RUN_ID
++    if ($env:MAS_RECOVERY_ACTION -eq 'end') {
++        $result = 'control-returned-activation-not-verified'
++        if ($env:error -or $env:error_ -or $env:MAS_RECOVERY_LOG_FAILED) { $result = 'control-returned-with-errors-or-incomplete-log' }
++        Write-RecoveryRecord -Directory $directory -Scope $scope -Event 'control-returned' -Result $result -Required $true
++    } elseif ($env:MAS_RECOVERY_ACTION -eq 'phase') {
++        if ($env:MAS_RECOVERY_EVENT -notin @('diagnostics','key-install-may-run','hwid-ticket-may-run','ohook-files-may-change','tsforge-processing','kms-processing')) { throw 'Unknown journal event.' }
++        Write-RecoveryRecord -Directory $directory -Scope $scope -Event $env:MAS_RECOVERY_EVENT -Result 'intent-not-outcome' -Required $true
++    } else { throw 'Unknown journal action.' }
++}
++
++:saferjournal:
+--- safer-r2/MAS/Separate-Files-Version/Activators/Online_KMS_Activation.cmd
++++ safer-r3/MAS/Separate-Files-Version/Activators/Online_KMS_Activation.cmd
+@@ -1,5 +1,7 @@
+ @set masver=3.14
+ @echo off
++@setlocal EnableExtensions DisableDelayedExpansion
++@for %%P in (%*) do @if /i "%%~P"=="/Plan" goto :mas_safer_plan
+ 
+ :: MAS 3.14 LOCAL SAFER BUILD - experimental; see README-SAFER.txt.
+ :: Set a specific switch to 1 only after reading its documented effects.
+@@ -7,6 +9,8 @@
+ set "MAS_SAFER_ALLOW_LICENSE_CLEANUP=0"
+ set "MAS_SAFER_ALLOW_REPAIRS=0"
+ set "MAS_SAFE_SELF=%~f0"
++set "MAS_RECOVERY_RUN_ID="
++set "MAS_RECOVERY_LOG_FAILED="
+ 
+ 
+ 
+@@ -575,6 +579,9 @@
+ ::  Windows Management Instrumentation
+ 
+ if %_actwin%==0 set notwinact=1
++call :mas_safer_journal_begin KMS
++if errorlevel 1 (set error=1&goto :dk_done)
++call :mas_safer_journal_event diagnostics
+ call :dk_errorcheck
+ 
+ ::========================================================================================================================================
+@@ -956,6 +963,7 @@
+ ::========================================================================================================================================
+ 
+ :ks_activate
++call :mas_safer_journal_event kms-processing
+ 
+ ::  Opt out of sending KMSclient activation data to Microsoft
+ ::  https://learn.microsoft.com/en-us/windows/privacy/manage-connections-from-windows-operating-system-components-to-microsoft-services#19-software-protection-platform
+@@ -1607,6 +1615,8 @@
+ ::========================================================================================================================================
+ 
+ :ks_uninstall
++call :mas_safer_journal_begin KMS-Uninstall
++if errorlevel 1 (set error=1&goto :dk_done)
+ 
+ cls
+ if not defined terminal mode 91, 30
+@@ -2683,6 +2693,7 @@
+ ::  Install Key
+ 
+ :dk_inskey
++call :mas_safer_journal_event key-install-may-run
+ 
+ if %_wmic% EQU 1 wmic path %sps% where __CLASS='%sps%' call InstallProductKey ProductKey="%key%" %nul%
+ if %_wmic% EQU 0 %psc% "try { $null=(([WMISEARCHER]'SELECT Version FROM %sps%').Get()).InstallProductKey('%key%'); exit 0 } catch { exit $_.Exception.InnerException.HResult }" %nul%
+@@ -3691,6 +3702,7 @@
+ ::========================================================================================================================================
+ 
+ :dk_done
++call :mas_safer_journal_end
+ 
+ echo:
+ if %_unattended%==1 timeout /t 2 & exit /b
+@@ -4271,3 +4283,242 @@
+ foreach ($file in $files) { Remove-Item -LiteralPath $file.FullName -Force }
+ if (Test-Path -LiteralPath $dest) { [IO.Directory]::Delete($dest,$false) }
+ :saferkms:
++
++exit /b
++:mas_safer_plan
++setlocal EnableExtensions DisableDelayedExpansion
++if /i not "%~1"=="/Plan" (
++echo /Plan must be the first argument. Mixed activation arguments were refused.
++exit /b 2
++)
++if not "%~3"=="" (
++echo Plan accepts only one optional scope: All, HWID, Ohook, TSforge or KMS.
++exit /b 2
++)
++set "MAS_SAFE_SELF=%~f0"
++set "MAS_PLAN_METHOD=%~2"
++set "MAS_PLAN_PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
++if exist "%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe" set "MAS_PLAN_PS=%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
++"%MAS_PLAN_PS%" -NoLogo -NoProfile -NonInteractive -Command "$ErrorActionPreference='Stop'; try { $b=[IO.File]::ReadAllText($env:MAS_SAFE_SELF) -split '(?m)^:saferplan:\r?$'; if ($b.Count -ne 3) { throw 'Invalid plan block' }; & ([scriptblock]::Create($b[1])); exit 0 } catch { Write-Error ('Plan unavailable: '+$_.Exception.Message); exit 2 }"
++exit /b %errorlevel%
++
++:mas_safer_journal_begin
++set "MAS_RECOVERY_SCOPE=%~1"
++set "MAS_RECOVERY_RUN_ID="
++set "MAS_RECOVERY_LOG_FAILED="
++set "MAS_RECOVERY_ACTION=begin"
++for /f "delims=" %%J in ('%psc% "$ErrorActionPreference='Stop'; try { $b=[IO.File]::ReadAllText($env:MAS_SAFE_SELF) -split '(?m)^:saferjournal:\r?$'; if ($b.Count -ne 3) { throw 'Invalid journal block' }; . ([scriptblock]::Create($b[1])); Invoke-BatchJournal } catch { [Console]::Error.WriteLine('Recovery journal could not be initialized. No activation phase was started.'); exit 1 }"') do set "MAS_RECOVERY_RUN_ID=%%J"
++if not defined MAS_RECOVERY_RUN_ID exit /b 1
++echo Recovery journal: %windir%\MAS-Safer-Recovery\%MAS_RECOVERY_RUN_ID%
++exit /b 0
++
++:mas_safer_journal_event
++set "MAS_RECOVERY_SAVED_RC=%errorlevel%"
++if not defined MAS_RECOVERY_RUN_ID exit /b %MAS_RECOVERY_SAVED_RC%
++set "MAS_RECOVERY_ACTION=phase"
++set "MAS_RECOVERY_EVENT=%~1"
++call :mas_safer_journal_write
++exit /b %MAS_RECOVERY_SAVED_RC%
++
++:mas_safer_journal_end
++if not defined MAS_RECOVERY_RUN_ID exit /b
++set "MAS_RECOVERY_ACTION=end"
++call :mas_safer_journal_write
++set "MAS_RECOVERY_RUN_ID="
++exit /b
++
++:mas_safer_journal_write
++%psc% "$ErrorActionPreference='Stop'; try { $b=[IO.File]::ReadAllText($env:MAS_SAFE_SELF) -split '(?m)^:saferjournal:\r?$'; if ($b.Count -ne 3) { throw 'Invalid journal block' }; . ([scriptblock]::Create($b[1])); Invoke-BatchJournal; exit 0 } catch { [Console]::Error.WriteLine('Recovery journal incomplete. Inspect backups; activation/recovery outcome is not implied.'); exit 1 }"
++if errorlevel 1 set "MAS_RECOVERY_LOG_FAILED=1"
++exit /b
++
++:saferplan:
++# Read-only inventory and conditional plan. Never imports or invokes activation code.
++$ErrorActionPreference = 'Stop'
++if ($PSVersionTable.PSVersion -lt [version]'5.1') { throw 'Plan view requires Windows PowerShell 5.1.' }
++$method = $env:MAS_PLAN_METHOD
++if ([string]::IsNullOrWhiteSpace($method)) {
++    $method = switch ([IO.Path]::GetFileName($env:MAS_SAFE_SELF)) {
++        'HWID_Activation.cmd' { 'HWID' }
++        'Ohook_Activation_AIO.cmd' { 'Ohook' }
++        'TSforge_Activation.cmd' { 'TSforge' }
++        'Online_KMS_Activation.cmd' { 'KMS' }
++        default { 'All' }
++    }
++}
++if ($method -notin @('All','HWID','Ohook','TSforge','KMS')) { throw 'Use /Plan with All, HWID, Ohook, TSforge or KMS. No activation was requested.' }
++$source = $env:MAS_SAFE_SELF
++if (-not [IO.File]::Exists($source)) { throw 'The source script could not be read.' }
++$sourceText = [IO.File]::ReadAllText($source)
++function Show([string]$line) { Write-Output $line }
++function Read-Registry([string]$path, [string[]]$names) {
++    foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64,[Microsoft.Win32.RegistryView]::Registry32)) {
++        $base = $null; $key = $null
++        try {
++            $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine,$view)
++            $key = $base.OpenSubKey($path,$false)
++            if ($key) {
++                foreach ($name in $names) {
++                    $value = $key.GetValue($name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
++                    if ($null -ne $value) {
++                        # Registry strings are data, never commands; remove control characters from display.
++                        Show ('  {0} {1}: {2}' -f $view,$name,([regex]::Replace([string]$value,'[\x00-\x1f\x7f]',' ')))
++                    }
++                }
++            }
++        } catch { Show ('  {0}: unavailable ({1})' -f $view,$_.Exception.GetType().Name) }
++        finally { if ($key) { $key.Dispose() }; if ($base) { $base.Dispose() } }
++    }
++}
++function Show-Flag([string]$name) {
++    $matches = [regex]::Matches($sourceText,'(?im)^set\s+"?'+[regex]::Escape($name)+'=([01])"?\s*$')
++    if ($matches.Count -eq 1) { Show ('  {0}={1}' -f $name,$matches[0].Groups[1].Value) }
++    else { Show ('  {0}: source-dependent or unavailable; inspect the chosen module' -f $name) }
++}
++Show 'MAS safer r3 - PLAN ONLY'
++Show ('Source: '+[IO.Path]::GetFileName($source))
++Show ('Selected scope: '+$method)
++Show 'No activation, elevation, service control, registry writes, downloads or journal creation is performed by this mode.'
++Show 'This is a conditional plan, not a successful preflight or a guarantee of activation.'
++Show ''
++Show 'Windows inventory (read-only):'
++Read-Registry 'SOFTWARE\Microsoft\Windows NT\CurrentVersion' @('ProductName','EditionID','CurrentBuildNumber','DisplayVersion','UBR')
++Show ('Process architecture: '+$env:PROCESSOR_ARCHITECTURE)
++try {
++    $drive = New-Object IO.DriveInfo([IO.Path]::GetPathRoot($env:windir))
++    Show ('Free space on Windows volume: {0:N2} GiB (no write probe)' -f ($drive.AvailableFreeSpace/1GB))
++} catch { Show 'Free space: unavailable; not treated as sufficient.' }
++Show ''
++Show 'Source defaults (runtime options and product discovery may change the actual path):'
++foreach ($flag in 'MAS_SAFER_ALLOW_PUBLIC_KMS','MAS_SAFER_ALLOW_LICENSE_CLEANUP','MAS_SAFER_ALLOW_REPAIRS','_NoEditionChange','_norentsk') { Show-Flag $flag }
++Show ''
++if ($method -in @('All','HWID')) {
++    Show 'HWID - possible actions when explicitly activated later:'
++    Show '  Inspect Windows edition and existing license; start required services.'
++    Show '  Install a product key, prepare/import a ticket and contact activation services.'
++    Show '  Automatic edition/region changes are disabled by safer defaults.'
++    Show '  Key/ticket/service changes are not covered by automatic file rollback.'
++}
++if ($method -in @('All','Ohook','TSforge','KMS')) {
++    Show ''
++    Show 'Office inventory (C2R registry only; an absent entry does NOT exclude MSI/UWP Office):'
++    Read-Registry 'SOFTWARE\Microsoft\Office\ClickToRun\Configuration' @('InstallationPath','Platform','VersionToReport','ProductReleaseIds')
++    Show 'Office MSI/UWP products and exact hook targets: not resolved in plan-only mode.'
++}
++if ($method -in @('All','Ohook')) {
++    Show ''
++    Show 'Ohook - possible actions when explicitly installed/uninstalled later:'
++    Show '  Resolve C2R/MSI/OSPP paths; check existing DLLs, links and Microsoft signatures.'
++    Show '  Install license/key data; back up recognized DLLs and link metadata.'
++    Show '  Stage verified DLL bytes; replace DLLs/create links; attempt file rollback on failure.'
++    Show '  Uninstall removes recognized forwarding links and restores recognized OSPPC files.'
++    Show '  Conditional targets: Office sppc.dll/sppcs.dll and shared OfficeSoftwareProtectionPlatform\OSPPC.DLL.'
++    Show '  Prior key/registry changes are not undone by DLL rollback.'
++}
++if ($method -in @('All','TSforge')) {
++    Show ''
++    Show 'TSforge - possible actions when explicitly activated later:'
++    Show '  Resolve the licensing store/version and selected product IDs; stop/restart SPP as needed.'
++    Show '  For PKEY2005, validate physical/token stores before removing keys; reopen after licensing API changes.'
++    Show '  Prepare backups and encrypted store outputs; replace stores; attempt per-file recovery on failure.'
++    Show '  Write associated registry data and invalidate cache; perform the selected activation method.'
++    Show '  Candidate store locations (not opened, parsed, hashed or locked by plan mode):'
++    foreach ($relative in 'System32\spp\store','System32\spp\store\2.0','System32\spp\store_test\2.0','ServiceProfiles\NetworkService\AppData\Roaming\Microsoft\SoftwareProtectionPlatform') {
++        Show ('    '+[IO.Path]::Combine($env:windir,$relative))
++    }
++    Show '  A registry-configured TokenStore or legacy Vista store may be used instead.'
++    Show '  Store schema, decryptability, API availability and full-state rollback: NOT verified here.'
++}
++if ($method -in @('All','KMS')) {
++    Show ''
++    Show 'KMS - possible actions when explicitly activated later:'
++    Show '  Install appropriate keys, configure the selected host/port and contact that host.'
++    Show '  With safer defaults and no explicit trusted host, activation is refused.'
++    Show '  Optional renewal-task creation requires different settings; task cleanup may still run.'
++    Show '  Key, host, registry and scheduler changes do not have automatic full rollback.'
++}
++Show ''
++Show 'Journal and recovery limits:'
++Show ('  Future mutation journals: '+[IO.Path]::Combine($env:windir,'MAS-Safer-Recovery'))
++Show ('  Ohook backup manifests/journals: '+[IO.Path]::Combine($env:windir,'MAS-Safer-Backups'))
++Show '  Store .bak/.tmp/.restore files are beside the affected store; journals list exact paths.'
++Show '  No terminal event means interrupted or unknown, never success.'
++Show '  File rollback does not roll back product keys, the registry, service state or remote activation.'
++Show ''
++Show 'Not checked: effective write/delete permissions, backup creation, DLL trust/network certificate checks,'
++Show 'store compatibility, licensing service health, network reachability, activation or recovery behavior.'
++Show 'Plan view ends here. It never continues into activation.'
++
++:saferplan:
++:saferjournal:
++# Definitions only. Loading this block does not create files.
++function Assert-RecoveryDirectory([string]$path) {
++    if (-not [IO.Path]::IsPathRooted($path) -or -not [IO.Directory]::Exists($path)) { throw 'Invalid recovery directory.' }
++    for ($d = Get-Item -LiteralPath $path -Force; $null -ne $d; $d = $d.Parent) {
++        if ($d.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Redirected recovery directory refused.' }
++    }
++}
++function New-RecoveryFolder {
++    $root = Join-Path $env:windir 'MAS-Safer-Recovery'
++    Assert-RecoveryDirectory $env:windir
++    $acl = New-Object Security.AccessControl.DirectorySecurity
++    $acl.SetAccessRuleProtection($true,$false)
++    foreach ($sid in 'S-1-5-18','S-1-5-32-544') {
++        $identity = New-Object Security.Principal.SecurityIdentifier($sid)
++        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($identity,'FullControl','ContainerInherit,ObjectInherit','None','Allow')))
++    }
++    if (-not [IO.Directory]::Exists($root)) { [void][IO.Directory]::CreateDirectory($root,$acl) }
++    Assert-RecoveryDirectory $root
++    Set-Acl -LiteralPath $root -AclObject $acl
++    $directory = Join-Path $root ([guid]::NewGuid().ToString('N'))
++    [void][IO.Directory]::CreateDirectory($directory,$acl)
++    return $directory
++}
++function Write-RecoveryRecord {
++    param([string]$Directory,[string]$Scope,[string]$Event,[string]$Item='',
++          [string]$Backup='',[string]$Auxiliary='',[string]$Sha256='',
++          [string]$Result='',[bool]$Required=$false)
++    try {
++        Assert-RecoveryDirectory $Directory
++        $path = Join-Path $Directory 'events.jsonl'
++        if ([IO.File]::Exists($path) -and (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { throw 'Redirected journal refused.' }
++        $parent = $env:MAS_RECOVERY_RUN_ID
++        if ($parent -notmatch '^[a-fA-F0-9]{32}$') { $parent = '' }
++        if ($parent -eq [IO.Path]::GetFileName($Directory)) { $parent = '' }
++        $record = [ordered]@{schema=1;utc=[DateTime]::UtcNow.ToString('o');operation=[IO.Path]::GetFileName($Directory);
++            parent=$parent;scope=$Scope;event=$Event;item=$Item;backup=$Backup;auxiliary=$Auxiliary;sha256=$Sha256;result=$Result}
++        $bytes = [Text.Encoding]::UTF8.GetBytes(($record | ConvertTo-Json -Compress -Depth 3)+[Environment]::NewLine)
++        $stream = New-Object IO.FileStream($path,[IO.FileMode]::Append,[IO.FileAccess]::Write,[IO.FileShare]::Read,4096,[IO.FileOptions]::WriteThrough)
++        try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush() } finally { $stream.Dispose() }
++    } catch {
++        if ($Required) { throw 'Recovery journal could not be written; the next mutation was not started.' }
++        try { Write-Warning ('Recovery journal incomplete: '+$Directory+'. Inspect backups; no recovery outcome is implied.') -WarningAction Continue }
++        catch { # A closed output stream must not interrupt rollback either.
++        }
++    }
++}
++function Invoke-BatchJournal {
++    $ErrorActionPreference = 'Stop'
++    if ($PSVersionTable.PSVersion -lt [version]'5.1') { throw 'Recovery journal requires Windows PowerShell 5.1.' }
++    $scope = $env:MAS_RECOVERY_SCOPE
++    if ($scope -notin @('HWID','Ohook','TSforge','KMS','Ohook-Uninstall','KMS-Uninstall')) { throw 'Unknown journal scope.' }
++    if ($env:MAS_RECOVERY_ACTION -eq 'begin') {
++        $directory = New-RecoveryFolder
++        Write-RecoveryRecord -Directory $directory -Scope $scope -Event 'operation-started' -Result 'activation-not-verified' -Required $true
++        # Only this token is returned to CMD. No key, argument string or exception text is logged.
++        Write-Output ([IO.Path]::GetFileName($directory))
++        return
++    }
++    if ($env:MAS_RECOVERY_RUN_ID -notmatch '^[a-fA-F0-9]{32}$') { throw 'Invalid recovery operation ID.' }
++    $directory = Join-Path (Join-Path $env:windir 'MAS-Safer-Recovery') $env:MAS_RECOVERY_RUN_ID
++    if ($env:MAS_RECOVERY_ACTION -eq 'end') {
++        $result = 'control-returned-activation-not-verified'
++        if ($env:error -or $env:error_ -or $env:MAS_RECOVERY_LOG_FAILED) { $result = 'control-returned-with-errors-or-incomplete-log' }
++        Write-RecoveryRecord -Directory $directory -Scope $scope -Event 'control-returned' -Result $result -Required $true
++    } elseif ($env:MAS_RECOVERY_ACTION -eq 'phase') {
++        if ($env:MAS_RECOVERY_EVENT -notin @('diagnostics','key-install-may-run','hwid-ticket-may-run','ohook-files-may-change','tsforge-processing','kms-processing')) { throw 'Unknown journal event.' }
++        Write-RecoveryRecord -Directory $directory -Scope $scope -Event $env:MAS_RECOVERY_EVENT -Result 'intent-not-outcome' -Required $true
++    } else { throw 'Unknown journal action.' }
++}
++
++:saferjournal:
+--- safer-r2/MAS/Separate-Files-Version/Activators/TSforge_Activation.cmd
++++ safer-r3/MAS/Separate-Files-Version/Activators/TSforge_Activation.cmd
+@@ -1,5 +1,7 @@
+ @set masver=3.14
+ @echo off
++@setlocal EnableExtensions DisableDelayedExpansion
++@for %%P in (%*) do @if /i "%%~P"=="/Plan" goto :mas_safer_plan
+ 
+ :: MAS 3.14 LOCAL SAFER BUILD - experimental; see README-SAFER.txt.
+ :: Set a specific switch to 1 only after reading its documented effects.
+@@ -7,6 +9,8 @@
+ set "MAS_SAFER_ALLOW_LICENSE_CLEANUP=0"
+ set "MAS_SAFER_ALLOW_REPAIRS=0"
+ set "MAS_SAFE_SELF=%~f0"
++set "MAS_RECOVERY_RUN_ID="
++set "MAS_RECOVERY_LOG_FAILED="
+ 
+ 
+ 
+@@ -696,6 +700,9 @@
+ ::  Software Protection
+ ::  Windows Management Instrumentation
+ 
++call :mas_safer_journal_begin TSforge
++if errorlevel 1 (set error=1&goto :dk_done)
++call :mas_safer_journal_event diagnostics
+ call :dk_errorcheck
+ 
+ call :ts_getedition
+@@ -1893,6 +1900,7 @@
+ ::========================================================================================================================================
+ 
+ :ts_act
++call :mas_safer_journal_event tsforge-processing
+ 
+ if defined eval (
+ echo:
+@@ -2779,6 +2787,7 @@
+ ::  Install Key
+ 
+ :dk_inskey
++call :mas_safer_journal_event key-install-may-run
+ 
+ if %_wmic% EQU 1 wmic path %sps% where __CLASS='%sps%' call InstallProductKey ProductKey="%key%" %nul%
+ if %_wmic% EQU 0 %psc% "try { $null=(([WMISEARCHER]'SELECT Version FROM %sps%').Get()).InstallProductKey('%key%'); exit 0 } catch { exit $_.Exception.InnerException.HResult }" %nul%
+@@ -3745,6 +3754,7 @@
+ ::========================================================================================================================================
+ 
+ :dk_done
++call :mas_safer_journal_end
+ 
+ echo:
+ if %_unattended%==1 timeout /t 2 & exit /b
+@@ -8990,6 +9000,7 @@
+             string[] permissions = new string[names.Length];
+             int attempted = 0;
+             bool committed = false;
++            RecoveryJournal journal = new RecoveryJournal("TSforge-store-files");
+             try
+             {
+                 // Independent, verified backups survive partial failures inside File.Replace.
+@@ -9012,29 +9023,41 @@
+                     ApplyPermissions(temporary[i], permissions[i]);
+                     if (!File.ReadAllBytes(temporary[i]).SequenceEqual(data[i]))
+                         throw new IOException("Staged store verification failed.");
++                    journal.Required("backup-verified", names[i], backups[i], "",
++                        RecoveryJournal.Hash(File.ReadAllBytes(backups[i])), "original-bytes");
++                    journal.Required("output-staged", names[i], backups[i], temporary[i],
++                        RecoveryJournal.Hash(data[i]), "no-destination-change-yet");
+                 }
+                 for (int i = 0; i < names.Length; i++)
+                 {
+                     CheckPath(names[i]);
+                     if (!File.ReadAllBytes(names[i]).SequenceEqual(File.ReadAllBytes(backups[i])))
+                         throw new IOException("Store changed after staging; refusing replacement.");
++                    journal.Required("replace-intent", names[i], backups[i], displaced[i], "", "may-partially-complete");
+                     attempted = i + 1; // Include partial failure INSIDE the native call.
+                     File.Replace(temporary[i], names[i], displaced[i]);
++                    journal.Note("replace-returned", names[i], backups[i], "", "", "file-operation-only");
+                 }
+                 committed = true;
++                journal.Note("files-committed", "", "", "", "", "activation-not-verified");
+             }
+             catch (Exception writeError)
+             {
+                 string rollbackErrors = "";
++                journal.Note("operation-failed", "", "", "", "", writeError.GetType().FullName);
+                 for (int i = attempted - 1; i >= 0; i--)
+                 {
+                     string restore = names[i] + suffix + ".restore";
+                     try
+                     {
++                        journal.Note("rollback-intent", names[i], backups[i], restore, "", "recovery-pending");
+                         CheckPath(names[i], true);
+                         CheckPath(backups[i]);
+                         if (File.Exists(names[i]) && File.ReadAllBytes(names[i]).SequenceEqual(File.ReadAllBytes(backups[i])))
++                        {
++                            journal.Note("rollback-item", names[i], backups[i], "", "", "unchanged");
+                             continue; // Failed before mutation; leave the original in place.
++                        }
+                         File.Copy(backups[i], restore, false);
+                         ApplyPermissions(restore, permissions[i]);
+                         if (!File.ReadAllBytes(restore).SequenceEqual(File.ReadAllBytes(backups[i])))
+@@ -9044,9 +9067,16 @@
+                             File.Replace(restore, names[i], names[i] + suffix + ".rollback-displaced");
+                         else
+                             File.Move(restore, names[i]);
++                        journal.Note("rollback-item", names[i], backups[i], restore, "", "restored");
+                     }
+-                    catch (Exception ex) { rollbackErrors += " " + names[i] + ": " + ex.Message; }
+-                }
++                    catch (Exception ex)
++                    {
++                        rollbackErrors += " " + names[i] + ": " + ex.Message;
++                        journal.Note("rollback-item", names[i], backups[i], restore, "", "manual-recovery:" + ex.GetType().FullName);
++                    }
++                }
++                journal.Note("file-rollback-ended", "", "", "", "",
++                    rollbackErrors.Length == 0 ? "restored-or-unchanged; licensing-state-not-restored" : "manual-recovery-required");
+                 throw new IOException("Store write failed. Backups retained with suffix " + suffix +
+                     (rollbackErrors.Length == 0 ? ". Attempted file replacements restored or unchanged; licensing API/registry changes are not rolled back." :
+                     ". MANUAL RECOVERY REQUIRED:" + rollbackErrors), writeError);
+@@ -9057,7 +9087,7 @@
+                 if (committed) foreach (string path in temporary.Concat(displaced))
+                 {
+                     try { if (File.Exists(path)) File.Delete(path); }
+-                    catch { /* Keep staging file rather than hiding the primary error. */ }
++                    catch (Exception cleanupError) { journal.Note("cleanup-retained", path, "", "", "", cleanupError.GetType().FullName); }
+                 }
+             }
+         }
+@@ -9068,6 +9098,102 @@
+             finished = true;
+             paths.Clear();
+             contents.Clear();
++        }
++    }
++}
++
++
++// Recovery metadata only. Never logs license/key contents or exception messages.
++namespace LibTSforge
++{
++    using System;
++    using System.IO;
++    using System.Security.AccessControl;
++    using System.Security.Principal;
++    using System.Text;
++    using System.Security.Cryptography;
++
++    public sealed class RecoveryJournal
++    {
++        private readonly string folder;
++        private readonly string scope;
++        public string Folder { get { return folder; } }
++
++        private static void CheckDirectory(string path)
++        {
++            for (string p = Path.GetFullPath(path); !string.IsNullOrEmpty(p); p = Path.GetDirectoryName(p))
++                if ((File.GetAttributes(p) & FileAttributes.ReparsePoint) != 0 || !Directory.Exists(p))
++                    throw new IOException("Redirected or missing recovery directory.");
++        }
++
++        public RecoveryJournal(string operationScope)
++        {
++            scope = operationScope;
++            string windows = Environment.GetEnvironmentVariable("windir");
++            CheckDirectory(windows);
++            string root = Path.Combine(windows, "MAS-Safer-Recovery");
++            DirectorySecurity acl = new DirectorySecurity();
++            acl.SetAccessRuleProtection(true, false);
++            foreach (string sid in new string[] { "S-1-5-18", "S-1-5-32-544" })
++                acl.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(sid), FileSystemRights.FullControl,
++                    InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
++            if (!Directory.Exists(root)) Directory.CreateDirectory(root, acl);
++            CheckDirectory(root);
++            new DirectoryInfo(root).SetAccessControl(acl);
++            folder = Path.Combine(root, Guid.NewGuid().ToString("N"));
++            Directory.CreateDirectory(folder, acl);
++            Required("operation-started", "", "", "", "", "not-completed");
++            Console.WriteLine("Recovery journal: " + folder);
++        }
++
++        private static string Quote(string value)
++        {
++            StringBuilder result = new StringBuilder("\"");
++            foreach (char c in value ?? "")
++            {
++                if (c == '"' || c == '\\') { result.Append('\\'); result.Append(c); }
++                else if (c < 32) result.Append("\\u" + ((int)c).ToString("x4"));
++                else result.Append(c);
++            }
++            return result.Append('"').ToString();
++        }
++
++        public static string Hash(byte[] bytes)
++        {
++            using (SHA256 sha = SHA256.Create())
++                return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
++        }
++
++        public void Required(string phase, string item, string backup, string auxiliary, string hash, string result)
++        {
++            CheckDirectory(folder);
++            string path = Path.Combine(folder, "events.jsonl");
++            if (File.Exists(path) && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
++                throw new IOException("Redirected journal refused.");
++            string parent = Environment.GetEnvironmentVariable("MAS_RECOVERY_RUN_ID");
++            try { parent = new Guid(parent).ToString("N"); } catch { parent = ""; }
++            string json = "{\"schema\":1,\"utc\":" + Quote(DateTime.UtcNow.ToString("o")) +
++                ",\"operation\":" + Quote(Path.GetFileName(folder)) + ",\"parent\":" + Quote(parent) +
++                ",\"scope\":" + Quote(scope) + ",\"event\":" + Quote(phase) + ",\"item\":" + Quote(item) +
++                ",\"backup\":" + Quote(backup) + ",\"auxiliary\":" + Quote(auxiliary) +
++                ",\"sha256\":" + Quote(hash) + ",\"result\":" + Quote(result) + "}" + Environment.NewLine;
++            byte[] bytes = Encoding.UTF8.GetBytes(json);
++            using (FileStream stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read, 4096, FileOptions.WriteThrough))
++            {
++                stream.Write(bytes, 0, bytes.Length);
++                stream.Flush();
++            }
++        }
++
++        // Logging failure during recovery must never interrupt the recovery itself.
++        public void Note(string phase, string item, string backup, string auxiliary, string hash, string result)
++        {
++            try { Required(phase, item, backup, auxiliary, hash, result); }
++            catch
++            {
++                try { Console.Error.WriteLine("Recovery journal incomplete: " + folder + ". Inspect backups; outcome is unknown."); }
++                catch { /* A closed console must not interrupt rollback either. */ }
++            }
+         }
+     }
+ }
+@@ -9099,6 +9225,12 @@
+ if ($env:_debug -eq '0') {
+     [LibTSforge.Logger]::HideOutput = $true
+ }
++$masJournal = $null
++$masJournalOutcome = 'interrupted-or-unknown'
++$errcode = 0
++try {
++    $masJournal = New-Object LibTSforge.RecoveryJournal('TSforge-processing')
++    $masJournal.Required('licensing-actions-may-run','','','','','keys-registry-services-not-transactional')
+ [void][LibTSforge.Utils]::Wow64EnableWow64FsRedirection($false)
+ $ver = [LibTSforge.Utils]::DetectVersion()
+ $prod = [LibTSforge.SPP.SPPUtils]::DetectCurrentKey()
+@@ -9290,6 +9422,15 @@
+     }
+ }
+ 
++$masJournalOutcome = if ($errcode -eq 3) { 'worker-returned-with-errors' } else { 'worker-returned; activation-not-independently-verified' }
++} catch {
++    $errcode = 3
++    $masJournalOutcome = 'worker-exception; licensing-state-unknown'
++    if ($masJournal) { $masJournal.Note('worker-failed','','','','',$_.Exception.GetType().FullName) }
++    Write-Host 'TSforge processing failed. Inspect the recovery journal and existing error output.' -ForegroundColor Red
++} finally {
++    if ($masJournal) { $masJournal.Note('worker-ended','','','','',$masJournalOutcome) }
++}
+ Exit $errcode
+ :tsforge:
+ 
+@@ -10096,3 +10237,242 @@
+ 
+ ::========================================================================================================================================
+ :: Leave empty line below
++
++exit /b
++:mas_safer_plan
++setlocal EnableExtensions DisableDelayedExpansion
++if /i not "%~1"=="/Plan" (
++echo /Plan must be the first argument. Mixed activation arguments were refused.
++exit /b 2
++)
++if not "%~3"=="" (
++echo Plan accepts only one optional scope: All, HWID, Ohook, TSforge or KMS.
++exit /b 2
++)
++set "MAS_SAFE_SELF=%~f0"
++set "MAS_PLAN_METHOD=%~2"
++set "MAS_PLAN_PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
++if exist "%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe" set "MAS_PLAN_PS=%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
++"%MAS_PLAN_PS%" -NoLogo -NoProfile -NonInteractive -Command "$ErrorActionPreference='Stop'; try { $b=[IO.File]::ReadAllText($env:MAS_SAFE_SELF) -split '(?m)^:saferplan:\r?$'; if ($b.Count -ne 3) { throw 'Invalid plan block' }; & ([scriptblock]::Create($b[1])); exit 0 } catch { Write-Error ('Plan unavailable: '+$_.Exception.Message); exit 2 }"
++exit /b %errorlevel%
++
++:mas_safer_journal_begin
++set "MAS_RECOVERY_SCOPE=%~1"
++set "MAS_RECOVERY_RUN_ID="
++set "MAS_RECOVERY_LOG_FAILED="
++set "MAS_RECOVERY_ACTION=begin"
++for /f "delims=" %%J in ('%psc% "$ErrorActionPreference='Stop'; try { $b=[IO.File]::ReadAllText($env:MAS_SAFE_SELF) -split '(?m)^:saferjournal:\r?$'; if ($b.Count -ne 3) { throw 'Invalid journal block' }; . ([scriptblock]::Create($b[1])); Invoke-BatchJournal } catch { [Console]::Error.WriteLine('Recovery journal could not be initialized. No activation phase was started.'); exit 1 }"') do set "MAS_RECOVERY_RUN_ID=%%J"
++if not defined MAS_RECOVERY_RUN_ID exit /b 1
++echo Recovery journal: %windir%\MAS-Safer-Recovery\%MAS_RECOVERY_RUN_ID%
++exit /b 0
++
++:mas_safer_journal_event
++set "MAS_RECOVERY_SAVED_RC=%errorlevel%"
++if not defined MAS_RECOVERY_RUN_ID exit /b %MAS_RECOVERY_SAVED_RC%
++set "MAS_RECOVERY_ACTION=phase"
++set "MAS_RECOVERY_EVENT=%~1"
++call :mas_safer_journal_write
++exit /b %MAS_RECOVERY_SAVED_RC%
++
++:mas_safer_journal_end
++if not defined MAS_RECOVERY_RUN_ID exit /b
++set "MAS_RECOVERY_ACTION=end"
++call :mas_safer_journal_write
++set "MAS_RECOVERY_RUN_ID="
++exit /b
++
++:mas_safer_journal_write
++%psc% "$ErrorActionPreference='Stop'; try { $b=[IO.File]::ReadAllText($env:MAS_SAFE_SELF) -split '(?m)^:saferjournal:\r?$'; if ($b.Count -ne 3) { throw 'Invalid journal block' }; . ([scriptblock]::Create($b[1])); Invoke-BatchJournal; exit 0 } catch { [Console]::Error.WriteLine('Recovery journal incomplete. Inspect backups; activation/recovery outcome is not implied.'); exit 1 }"
++if errorlevel 1 set "MAS_RECOVERY_LOG_FAILED=1"
++exit /b
++
++:saferplan:
++# Read-only inventory and conditional plan. Never imports or invokes activation code.
++$ErrorActionPreference = 'Stop'
++if ($PSVersionTable.PSVersion -lt [version]'5.1') { throw 'Plan view requires Windows PowerShell 5.1.' }
++$method = $env:MAS_PLAN_METHOD
++if ([string]::IsNullOrWhiteSpace($method)) {
++    $method = switch ([IO.Path]::GetFileName($env:MAS_SAFE_SELF)) {
++        'HWID_Activation.cmd' { 'HWID' }
++        'Ohook_Activation_AIO.cmd' { 'Ohook' }
++        'TSforge_Activation.cmd' { 'TSforge' }
++        'Online_KMS_Activation.cmd' { 'KMS' }
++        default { 'All' }
++    }
++}
++if ($method -notin @('All','HWID','Ohook','TSforge','KMS')) { throw 'Use /Plan with All, HWID, Ohook, TSforge or KMS. No activation was requested.' }
++$source = $env:MAS_SAFE_SELF
++if (-not [IO.File]::Exists($source)) { throw 'The source script could not be read.' }
++$sourceText = [IO.File]::ReadAllText($source)
++function Show([string]$line) { Write-Output $line }
++function Read-Registry([string]$path, [string[]]$names) {
++    foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64,[Microsoft.Win32.RegistryView]::Registry32)) {
++        $base = $null; $key = $null
++        try {
++            $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine,$view)
++            $key = $base.OpenSubKey($path,$false)
++            if ($key) {
++                foreach ($name in $names) {
++                    $value = $key.GetValue($name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
++                    if ($null -ne $value) {
++                        # Registry strings are data, never commands; remove control characters from display.
++                        Show ('  {0} {1}: {2}' -f $view,$name,([regex]::Replace([string]$value,'[\x00-\x1f\x7f]',' ')))
++                    }
++                }
++            }
++        } catch { Show ('  {0}: unavailable ({1})' -f $view,$_.Exception.GetType().Name) }
++        finally { if ($key) { $key.Dispose() }; if ($base) { $base.Dispose() } }
++    }
++}
++function Show-Flag([string]$name) {
++    $matches = [regex]::Matches($sourceText,'(?im)^set\s+"?'+[regex]::Escape($name)+'=([01])"?\s*$')
++    if ($matches.Count -eq 1) { Show ('  {0}={1}' -f $name,$matches[0].Groups[1].Value) }
++    else { Show ('  {0}: source-dependent or unavailable; inspect the chosen module' -f $name) }
++}
++Show 'MAS safer r3 - PLAN ONLY'
++Show ('Source: '+[IO.Path]::GetFileName($source))
++Show ('Selected scope: '+$method)
++Show 'No activation, elevation, service control, registry writes, downloads or journal creation is performed by this mode.'
++Show 'This is a conditional plan, not a successful preflight or a guarantee of activation.'
++Show ''
++Show 'Windows inventory (read-only):'
++Read-Registry 'SOFTWARE\Microsoft\Windows NT\CurrentVersion' @('ProductName','EditionID','CurrentBuildNumber','DisplayVersion','UBR')
++Show ('Process architecture: '+$env:PROCESSOR_ARCHITECTURE)
++try {
++    $drive = New-Object IO.DriveInfo([IO.Path]::GetPathRoot($env:windir))
++    Show ('Free space on Windows volume: {0:N2} GiB (no write probe)' -f ($drive.AvailableFreeSpace/1GB))
++} catch { Show 'Free space: unavailable; not treated as sufficient.' }
++Show ''
++Show 'Source defaults (runtime options and product discovery may change the actual path):'
++foreach ($flag in 'MAS_SAFER_ALLOW_PUBLIC_KMS','MAS_SAFER_ALLOW_LICENSE_CLEANUP','MAS_SAFER_ALLOW_REPAIRS','_NoEditionChange','_norentsk') { Show-Flag $flag }
++Show ''
++if ($method -in @('All','HWID')) {
++    Show 'HWID - possible actions when explicitly activated later:'
++    Show '  Inspect Windows edition and existing license; start required services.'
++    Show '  Install a product key, prepare/import a ticket and contact activation services.'
++    Show '  Automatic edition/region changes are disabled by safer defaults.'
++    Show '  Key/ticket/service changes are not covered by automatic file rollback.'
++}
++if ($method -in @('All','Ohook','TSforge','KMS')) {
++    Show ''
++    Show 'Office inventory (C2R registry only; an absent entry does NOT exclude MSI/UWP Office):'
++    Read-Registry 'SOFTWARE\Microsoft\Office\ClickToRun\Configuration' @('InstallationPath','Platform','VersionToReport','ProductReleaseIds')
++    Show 'Office MSI/UWP products and exact hook targets: not resolved in plan-only mode.'
++}
++if ($method -in @('All','Ohook')) {
++    Show ''
++    Show 'Ohook - possible actions when explicitly installed/uninstalled later:'
++    Show '  Resolve C2R/MSI/OSPP paths; check existing DLLs, links and Microsoft signatures.'
++    Show '  Install license/key data; back up recognized DLLs and link metadata.'
++    Show '  Stage verified DLL bytes; replace DLLs/create links; attempt file rollback on failure.'
++    Show '  Uninstall removes recognized forwarding links and restores recognized OSPPC files.'
++    Show '  Conditional targets: Office sppc.dll/sppcs.dll and shared OfficeSoftwareProtectionPlatform\OSPPC.DLL.'
++    Show '  Prior key/registry changes are not undone by DLL rollback.'
++}
++if ($method -in @('All','TSforge')) {
++    Show ''
++    Show 'TSforge - possible actions when explicitly activated later:'
++    Show '  Resolve the licensing store/version and selected product IDs; stop/restart SPP as needed.'
++    Show '  For PKEY2005, validate physical/token stores before removing keys; reopen after licensing API changes.'
++    Show '  Prepare backups and encrypted store outputs; replace stores; attempt per-file recovery on failure.'
++    Show '  Write associated registry data and invalidate cache; perform the selected activation method.'
++    Show '  Candidate store locations (not opened, parsed, hashed or locked by plan mode):'
++    foreach ($relative in 'System32\spp\store','System32\spp\store\2.0','System32\spp\store_test\2.0','ServiceProfiles\NetworkService\AppData\Roaming\Microsoft\SoftwareProtectionPlatform') {
++        Show ('    '+[IO.Path]::Combine($env:windir,$relative))
++    }
++    Show '  A registry-configured TokenStore or legacy Vista store may be used instead.'
++    Show '  Store schema, decryptability, API availability and full-state rollback: NOT verified here.'
++}
++if ($method -in @('All','KMS')) {
++    Show ''
++    Show 'KMS - possible actions when explicitly activated later:'
++    Show '  Install appropriate keys, configure the selected host/port and contact that host.'
++    Show '  With safer defaults and no explicit trusted host, activation is refused.'
++    Show '  Optional renewal-task creation requires different settings; task cleanup may still run.'
++    Show '  Key, host, registry and scheduler changes do not have automatic full rollback.'
++}
++Show ''
++Show 'Journal and recovery limits:'
++Show ('  Future mutation journals: '+[IO.Path]::Combine($env:windir,'MAS-Safer-Recovery'))
++Show ('  Ohook backup manifests/journals: '+[IO.Path]::Combine($env:windir,'MAS-Safer-Backups'))
++Show '  Store .bak/.tmp/.restore files are beside the affected store; journals list exact paths.'
++Show '  No terminal event means interrupted or unknown, never success.'
++Show '  File rollback does not roll back product keys, the registry, service state or remote activation.'
++Show ''
++Show 'Not checked: effective write/delete permissions, backup creation, DLL trust/network certificate checks,'
++Show 'store compatibility, licensing service health, network reachability, activation or recovery behavior.'
++Show 'Plan view ends here. It never continues into activation.'
++
++:saferplan:
++:saferjournal:
++# Definitions only. Loading this block does not create files.
++function Assert-RecoveryDirectory([string]$path) {
++    if (-not [IO.Path]::IsPathRooted($path) -or -not [IO.Directory]::Exists($path)) { throw 'Invalid recovery directory.' }
++    for ($d = Get-Item -LiteralPath $path -Force; $null -ne $d; $d = $d.Parent) {
++        if ($d.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Redirected recovery directory refused.' }
++    }
++}
++function New-RecoveryFolder {
++    $root = Join-Path $env:windir 'MAS-Safer-Recovery'
++    Assert-RecoveryDirectory $env:windir
++    $acl = New-Object Security.AccessControl.DirectorySecurity
++    $acl.SetAccessRuleProtection($true,$false)
++    foreach ($sid in 'S-1-5-18','S-1-5-32-544') {
++        $identity = New-Object Security.Principal.SecurityIdentifier($sid)
++        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($identity,'FullControl','ContainerInherit,ObjectInherit','None','Allow')))
++    }
++    if (-not [IO.Directory]::Exists($root)) { [void][IO.Directory]::CreateDirectory($root,$acl) }
++    Assert-RecoveryDirectory $root
++    Set-Acl -LiteralPath $root -AclObject $acl
++    $directory = Join-Path $root ([guid]::NewGuid().ToString('N'))
++    [void][IO.Directory]::CreateDirectory($directory,$acl)
++    return $directory
++}
++function Write-RecoveryRecord {
++    param([string]$Directory,[string]$Scope,[string]$Event,[string]$Item='',
++          [string]$Backup='',[string]$Auxiliary='',[string]$Sha256='',
++          [string]$Result='',[bool]$Required=$false)
++    try {
++        Assert-RecoveryDirectory $Directory
++        $path = Join-Path $Directory 'events.jsonl'
++        if ([IO.File]::Exists($path) -and (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { throw 'Redirected journal refused.' }
++        $parent = $env:MAS_RECOVERY_RUN_ID
++        if ($parent -notmatch '^[a-fA-F0-9]{32}$') { $parent = '' }
++        if ($parent -eq [IO.Path]::GetFileName($Directory)) { $parent = '' }
++        $record = [ordered]@{schema=1;utc=[DateTime]::UtcNow.ToString('o');operation=[IO.Path]::GetFileName($Directory);
++            parent=$parent;scope=$Scope;event=$Event;item=$Item;backup=$Backup;auxiliary=$Auxiliary;sha256=$Sha256;result=$Result}
++        $bytes = [Text.Encoding]::UTF8.GetBytes(($record | ConvertTo-Json -Compress -Depth 3)+[Environment]::NewLine)
++        $stream = New-Object IO.FileStream($path,[IO.FileMode]::Append,[IO.FileAccess]::Write,[IO.FileShare]::Read,4096,[IO.FileOptions]::WriteThrough)
++        try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush() } finally { $stream.Dispose() }
++    } catch {
++        if ($Required) { throw 'Recovery journal could not be written; the next mutation was not started.' }
++        try { Write-Warning ('Recovery journal incomplete: '+$Directory+'. Inspect backups; no recovery outcome is implied.') -WarningAction Continue }
++        catch { # A closed output stream must not interrupt rollback either.
++        }
++    }
++}
++function Invoke-BatchJournal {
++    $ErrorActionPreference = 'Stop'
++    if ($PSVersionTable.PSVersion -lt [version]'5.1') { throw 'Recovery journal requires Windows PowerShell 5.1.' }
++    $scope = $env:MAS_RECOVERY_SCOPE
++    if ($scope -notin @('HWID','Ohook','TSforge','KMS','Ohook-Uninstall','KMS-Uninstall')) { throw 'Unknown journal scope.' }
++    if ($env:MAS_RECOVERY_ACTION -eq 'begin') {
++        $directory = New-RecoveryFolder
++        Write-RecoveryRecord -Directory $directory -Scope $scope -Event 'operation-started' -Result 'activation-not-verified' -Required $true
++        # Only this token is returned to CMD. No key, argument string or exception text is logged.
++        Write-Output ([IO.Path]::GetFileName($directory))
++        return
++    }
++    if ($env:MAS_RECOVERY_RUN_ID -notmatch '^[a-fA-F0-9]{32}$') { throw 'Invalid recovery operation ID.' }
++    $directory = Join-Path (Join-Path $env:windir 'MAS-Safer-Recovery') $env:MAS_RECOVERY_RUN_ID
++    if ($env:MAS_RECOVERY_ACTION -eq 'end') {
++        $result = 'control-returned-activation-not-verified'
++        if ($env:error -or $env:error_ -or $env:MAS_RECOVERY_LOG_FAILED) { $result = 'control-returned-with-errors-or-incomplete-log' }
++        Write-RecoveryRecord -Directory $directory -Scope $scope -Event 'control-returned' -Result $result -Required $true
++    } elseif ($env:MAS_RECOVERY_ACTION -eq 'phase') {
++        if ($env:MAS_RECOVERY_EVENT -notin @('diagnostics','key-install-may-run','hwid-ticket-may-run','ohook-files-may-change','tsforge-processing','kms-processing')) { throw 'Unknown journal event.' }
++        Write-RecoveryRecord -Directory $directory -Scope $scope -Event $env:MAS_RECOVERY_EVENT -Result 'intent-not-outcome' -Required $true
++    } else { throw 'Unknown journal action.' }
++}
++
++:saferjournal:

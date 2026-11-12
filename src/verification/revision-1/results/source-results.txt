@@ -1,0 +1,3 @@
+PASS: source safety defaults, task XML, write-before-schedule order, 10 CRLF scripts.
+PASS: both DLLs remain byte-identical to the audited upstream DLLs in both distributions.
+PASS: identical embedded C#, explicit commits, no direct truncation of license stores, helper extraction boundaries.

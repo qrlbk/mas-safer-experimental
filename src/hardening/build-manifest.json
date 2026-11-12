@@ -1,0 +1,51 @@
+{
+  "revision": 3,
+  "method": "source text editing and static review only; build.py not executed",
+  "tests_executed": false,
+  "compilation_executed": false,
+  "activation_executed": false,
+  "plan_executed": false,
+  "journal_executed": false,
+  "files": [
+    {
+      "file": "MAS/All-In-One-Version-KL/MAS_AIO.cmd",
+      "sha256": "9fa1eb68150f5e0d88cde83f3b177b4c9a38ad0bc82e77a1f09736aa533dae9b"
+    },
+    {
+      "file": "MAS/Separate-Files-Version/Activators/HWID_Activation.cmd",
+      "sha256": "b877717a4f9875a7dd482ca100fb1a0a7e269e0b415fe45ba9ff074a561653a3"
+    },
+    {
+      "file": "MAS/Separate-Files-Version/Activators/Ohook_Activation_AIO.cmd",
+      "sha256": "91fce1b4df866b135159ca07baade1f2d11e2e4412cfce63d35ff628012fd828"
+    },
+    {
+      "file": "MAS/Separate-Files-Version/Activators/Online_KMS_Activation.cmd",
+      "sha256": "9fc363932a92db26e72a2405f701150dc76b49d2280d2b0be8b0e3235efbe05e"
+    },
+    {
+      "file": "MAS/Separate-Files-Version/Activators/TSforge_Activation.cmd",
+      "sha256": "91a3aa141b6ed67c84ce5c8e3a00ec09809a35ce54debc19cae9482d16d453a8"
+    },
+    {
+      "file": "MAS/Separate-Files-Version/Change_Office_Edition.cmd",
+      "sha256": "3b74e79b65e1a188cb944a52be37c12bf2e53460d0273bdf922468c6393b91dc"
+    },
+    {
+      "file": "MAS/Separate-Files-Version/Change_Windows_Edition.cmd",
+      "sha256": "a20bded9eaf9688b1ca5af186cc640eb51c56783b7c4d9c0521a7c1fd98c08e2"
+    },
+    {
+      "file": "MAS/Separate-Files-Version/Check_Activation_Status.cmd",
+      "sha256": "9f1245f95f6835a61af4da88a89b613fbc937917182a2416c5134be07e687ed0"
+    },
+    {
+      "file": "MAS/Separate-Files-Version/Extract_OEM_Folder.cmd",
+      "sha256": "1bc8504c13d6c94e0ba565994b2011e639bdc41560034f1d28bede01e77da34c"
+    },
+    {
+      "file": "MAS/Separate-Files-Version/Troubleshoot.cmd",
+      "sha256": "19ea8de52c35413c86dd4a6cdb0e35fd23f295aadb8a7146feb43554c0e79193"
+    }
+  ]
+}

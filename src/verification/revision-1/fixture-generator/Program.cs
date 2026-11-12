@@ -1,0 +1,2 @@
+using System; using System.IO; using LibTSforge.TokenStore;
+class Program { static void Main(string[] args) { Directory.CreateDirectory(args[0]); foreach(int n in new int[]{0,1,103,104,206}) { string p=Path.Combine(args[0],n+".dat"); File.WriteAllBytes(p,new byte[0]); using(var s=new TokenStoreModern(p)){for(int i=0;i<n;i++) s.SetEntry("entry"+i,"xml",new byte[]{1,2,3,(byte)i});} } } }

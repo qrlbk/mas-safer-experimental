@@ -1,0 +1,34 @@
+PASS: exception does not commit token changes
+PASS: read-only open/close preserves every byte
+PASS: explicit token commit persists data
+PASS: atomic commit retains exact original backup
+PASS: stable serialization and contents: 0 entries
+PASS: stable serialization and contents: 1 entries
+PASS: stable serialization and contents: 103 entries
+PASS: stable serialization and contents: 104 entries
+PASS: stable serialization and contents: 206 entries
+PASS: truncated input rejected, preserved, unlocked
+PASS: empty input rejected
+PASS: global hash mismatch rejected
+PASS: block hash mismatch rejected
+PASS: payload hash mismatch rejected even with valid global hash
+PASS: cyclic block chain rejected
+PASS: out-of-bounds payload offset rejected
+PASS: oversized payload rejected without allocation
+PASS: unknown version rejected
+PASS: abandoned file batch writes nothing
+PASS: explicit multi-file batch persists both outputs
+PASS: missing store is not silently created
+PASS: Vista dispose on failure preserves encrypted stores
+PASS: Vista explicit physical commit round-trip
+PASS: Vista mirrored files committed identically
+PASS: Win7 dispose on failure preserves encrypted stores
+PASS: Win7 explicit physical commit round-trip
+PASS: Win7 mirrored files committed identically
+PASS: Win8 dispose on failure preserves encrypted stores
+PASS: Win8 explicit physical commit round-trip
+PASS: WinBlue dispose on failure preserves encrypted stores
+PASS: WinBlue explicit physical commit round-trip
+PASS: WinModern dispose on failure preserves encrypted stores
+PASS: WinModern explicit physical commit round-trip
+TOTAL PASSED: 33

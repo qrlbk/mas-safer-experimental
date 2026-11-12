@@ -1,0 +1,4 @@
+Upstream: https://github.com/massgravel/Microsoft-Activation-Scripts
+Version: 3.14
+Commit: 6cfd6f455ffb4983ce567231d800f08c44c39f00
+Original ZIP retained without modifications.

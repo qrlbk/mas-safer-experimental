@@ -1,0 +1,15 @@
+{
+  "production_storage_checks_passed": 33,
+  "fault_variant_checks_passed": 34,
+  "unique_storage_checks": 34,
+  "fault_injection_in_production_scripts": false,
+  "embedded_powershell_blocks_parsed": 45,
+  "inline_powershell_snippets_parsed": 7,
+  "dotnet_sdk": "7.0.102",
+  "csharp_language_version": "3",
+  "powershell_parser": "7.7.0",
+  "test_os": "macOS arm64",
+  "windows_activation_tested": false,
+  "windows_compile_only_test_executed": false,
+  "windows_acl_signature_scheduler_verified": false
+}

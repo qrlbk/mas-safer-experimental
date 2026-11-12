@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <!-- Keep production and fault-test compilers/apphosts isolated. -->
+    <BaseIntermediateOutputPath>obj/$(MSBuildProjectName)/</BaseIntermediateOutputPath>
+    <BaseOutputPath>bin/$(MSBuildProjectName)/</BaseOutputPath>
+  </PropertyGroup>
+</Project>

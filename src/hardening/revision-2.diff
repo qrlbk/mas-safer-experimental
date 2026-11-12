@@ -1,0 +1,1195 @@
+--- safer-r1/MAS/All-In-One-Version-KL/MAS_AIO.cmd
++++ safer-r2/MAS/All-In-One-Version-KL/MAS_AIO.cmd
+@@ -1639,7 +1639,11 @@
+ set serv_csts=
+ set serv_cste=
+ 
+-if defined serv_ste (
++if not "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if defined serv_ste (
++echo Enabling Disabled Services              [Skipped: automatic repairs disabled] [%serv_ste%]
++set error=1
++)
++if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if defined serv_ste (
+ for %%# in (%serv_ste%) do (
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ if /i %%#==ClipSVC          (reg add "HKLM\SYSTEM\CurrentControlSet\Services\%%#" /v "Start" /t REG_DWORD /d "3" /f %nul% & sc config %%# start= demand %nul%)
+@@ -1678,7 +1682,7 @@
+ if not defined showfix (
+ echo:
+ echo %serv_cste% | findstr /i "ClipSVC sppsvc" %nul% && (
+-echo A registry fix has been applied to enable the disabled service.
++echo Automatic service repair failed. Inspect the service configuration before retrying.
+ call :dk_color %Blue% "Reboot your machine using the restart option to fix this error."
+ ) || (
+ set fixes=%fixes% %mas%in-place_repair_upgrade
+@@ -1798,7 +1802,11 @@
+ 
+ ::  This code creates token folder only if it's missing and sets default permission for it
+ 
+-if %winbuild% GEQ 7600 if not defined toerr if not exist "%tokenstore%\" (
++if not "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if %winbuild% GEQ 7600 if not defined toerr if not exist "%tokenstore%\" (
++echo Checking SPP Token Folder               [Missing; automatic creation skipped]
++set error=1
++)
++if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if %winbuild% GEQ 7600 if not defined toerr if not exist "%tokenstore%\" (
+ 
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ mkdir "%tokenstore%" %nul%
+@@ -1955,7 +1963,7 @@
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ %psc% "if (-not $env:_vis) {Start-Job { Stop-Service %_slser% -force } | Wait-Job -Timeout 20 | Out-Null}; $sls = Get-WmiObject SoftwareLicensingService; $f=[IO.File]::ReadAllText('!_batp!') -split ':xrm\:.*';. ([scriptblock]::Create($f[1])); ReinstallLicenses" %nul%
+ )
+-if not defined _vis if !errorlevel! NEQ 0 set rlicfailed=1
++if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if not defined _vis if !errorlevel! NEQ 0 set rlicfailed=1
+ call :dk_actid 55c92734-d682-4d71-983e-d6ec3f16059f
+ )
+ 
+@@ -2117,9 +2125,16 @@
+ if %winbuild% GEQ 7600 for /f "skip=2 tokens=2*" %%a in ('reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform" /v "SkipRearm" %nul6%') do if /i %%b NEQ 0x0 (
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform" /v "SkipRearm" /t REG_DWORD /d "0" /f %nul%
+-)
+-call :dk_color %Gray% "Checking SkipRearm                      [Default 0 Value Not Found. Changing To 0]"
++if !errorlevel!==0 (
++call :dk_color %Gray% "Checking SkipRearm                      [Changed To 0]"
+ %psc% "Start-Job { Stop-Service sppsvc -force } | Wait-Job -Timeout 20 | Out-Null"
++) else (
++set error=1
++call :dk_color %Red% "Checking SkipRearm                      [Failed To Change]"
++)
++) else (
++echo Checking SkipRearm                      [Non-default; automatic repair skipped]
++)
+ )
+ 
+ ::==============================
+@@ -2515,6 +2530,7 @@
+ ::========================================================================================================================================
+ 
+ :oh_menu2
++set mas_safer_ohook_failed=
+ 
+ cls
+ if not defined terminal (
+@@ -2746,6 +2762,7 @@
+ ) else (
+ call :oh_hookinstall
+ )
++if defined mas_safer_ohook_failed goto :dk_done
+ 
+ ::========================================================================================================================================
+ 
+@@ -2809,6 +2826,7 @@
+ ) else (
+ call :oh_hookinstall
+ )
++if defined mas_safer_ohook_failed goto :dk_done
+ 
+ ::========================================================================================================================================
+ 
+@@ -2847,9 +2865,12 @@
+ 
+ if defined o14msi call :oh_setspp 14
+ if defined o14msi call :oh_processmsi 14 %o14msi_reg%
++if defined mas_safer_ohook_failed goto :dk_done
+ call :oh_setspp
+ if defined o15msi call :oh_processmsi 15 %o15msi_reg%
++if defined mas_safer_ohook_failed goto :dk_done
+ if defined o16msi call :oh_processmsi 16 %o16msi_reg%
++if defined mas_safer_ohook_failed goto :dk_done
+ 
+ ::========================================================================================================================================
+ 
+@@ -3163,7 +3184,8 @@
+ )
+ )
+ 
+-exit /b
++if defined ierror (set mas_safer_ohook_failed=1&exit /b 1)
++exit /b 0
+ 
+ ::========================================================================================================================================
+ 
+@@ -3246,7 +3268,7 @@
+ 
+ call :oh_ppcpath
+ call :mas_safer_preflight
+-if errorlevel 1 goto :dk_done
++if errorlevel 1 exit /b 1
+ 
+ call :msiofficedata %2
+ 
+@@ -3276,6 +3298,7 @@
+ ) else (
+ call :oh_hookinstall
+ )
++if defined mas_safer_ohook_failed exit /b 1
+ 
+ exit /b
+ 
+@@ -8036,11 +8059,10 @@
+ 
+             ProductKey pkey = config.GetRandomKey();
+ 
+-            Guid instPkeyId = SLApi.GetInstalledPkeyID(actId);
+-            if (instPkeyId != Guid.Empty) SLApi.UninstallProductKey(instPkeyId);
+-
+             if (pkey.Algorithm == PKeyAlgorithm.PKEY2009)
+             {
++                Guid instPkeyId = SLApi.GetInstalledPkeyID(actId);
++                if (instPkeyId != Guid.Empty) SLApi.UninstallProductKey(instPkeyId);
+                 uint status = SLApi.InstallProductKey(pkey);
+                 Logger.WriteLine(string.Format("Installing generated product key {0} status {1:X}", pkey, status));
+ 
+@@ -8120,6 +8142,28 @@
+             bool isAddon = SLApi.IsAddon(actId);
+             string currEdition = SLApi.GetMetaStr(actId, "Family");
+ 
++            // All newly strict format checks run before ANY product key is removed.
++            // Dispose is read-only. These objects are discarded, never committed.
++            // Service recovery is still required if preflight itself fails.
++            try
++            {
++                SPPUtils.KillSPP(version);
++                using (IPhysicalStore preflightPhysical = SPPUtils.GetStore(version, production))
++                using (ITokenStore preflightTokens = SPPUtils.GetTokenStore(version))
++                {
++                    string preflightSuffix = (version == PSVersion.Win8 || version == PSVersion.WinBlue || version == PSVersion.WinModern) ? "_--_met" : "_met";
++                    preflightTokens.GetMetaEntry("msft:spp/token/PKeyIdUriMapper" + preflightSuffix);
++                    preflightTokens.GetMetaEntry(actId + preflightSuffix);
++                    if (appId == SLApi.WINDOWS_APP_ID && !isAddon)
++                        preflightTokens.GetMetaEntry("msft:spp/token/windows/productkeyid/" + currEdition);
++                }
++            }
++            finally { SPPUtils.RestartSPP(version); }
++
++            // Reopen stores after the licensing API updates them; never write stale preflight data.
++            Guid previousPkeyId = SLApi.GetInstalledPkeyID(actId);
++            if (previousPkeyId != Guid.Empty) SLApi.UninstallProductKey(previousPkeyId);
++
+             if (appId == SLApi.WINDOWS_APP_ID && !isAddon)
+             {
+                 SLApi.UninstallAllProductKeys(appId);
+@@ -8147,7 +8191,7 @@
+                         edToken.Data["windowsComponentEditionSkuId"] = actId.ToString();
+                         tks.SetEntry(edTokName, "xml", edToken.Serialize());
+ 
+-                        WritePkey2005RegistryValues(version, pkey);
++                        // Registry values are written only after the file batch commits.
+                     }
+ 
+                     string uriMapName = "msft:spp/token/PKeyIdUriMapper" + metSuffix;
+@@ -8182,14 +8226,18 @@
+                         Data = pkb.Serialize()
+                     });
+ 
+-                    string cachePath = SPPUtils.GetTokensPath(version).Replace("tokens.dat", @"cache\cache.dat");
+-                    if (File.Exists(cachePath)) File.Delete(cachePath);
+                     tks.Commit();
+                 }
+                 ps.Commit();
+             }
+                 batch.Commit();
+             }
++
++            // Still stopped: invalidate the cache before asking the licensing service to reload.
++            string cachePath = SPPUtils.GetTokensPath(version).Replace("tokens.dat", @"cache\cache.dat");
++            if (File.Exists(cachePath)) File.Delete(cachePath);
++            if (appId == SLApi.WINDOWS_APP_ID && !isAddon)
++                WritePkey2005RegistryValues(version, pkey);
+ 
+             SLApi.RefreshTrustedTime(actId);
+             Logger.WriteLine("Successfully deposited fake product key.");
+@@ -10968,9 +11016,11 @@
+     using System.Collections.Generic;
+     using System.IO;
+     using System.Linq;
++    using System.Security.AccessControl;
+ 
+     // A batch is explicit: disposing after an exception NEVER saves pending data.
+-    // File.Replace is atomic per file, not across files or across power loss.
++    // A failed Windows replacement may already have moved its destination.
++    // Recovery is best-effort per file, not a transaction across power loss.
+     public sealed class StoreWriteBatch : IDisposable
+     {
+         [ThreadStatic] private static StoreWriteBatch active;
+@@ -10986,10 +11036,24 @@
+ 
+         private static void CheckPath(string path)
+         {
++            CheckPath(path, false);
++        }
++
++        private static void CheckPath(string path, bool allowMissingLeaf)
++        {
++            bool leaf = true;
+             for (string p = Path.GetFullPath(path); !string.IsNullOrEmpty(p); p = Path.GetDirectoryName(p))
+             {
+-                if ((File.GetAttributes(p) & FileAttributes.ReparsePoint) != 0)
+-                    throw new IOException("Refusing a redirected store path: " + p);
++                try
++                {
++                    FileAttributes attributes = File.GetAttributes(p);
++                    if ((attributes & FileAttributes.ReparsePoint) != 0 ||
++                        (leaf && (attributes & FileAttributes.Directory) != 0))
++                        throw new IOException("Refusing a redirected/non-file store path: " + p);
++                }
++                catch (FileNotFoundException) { if (!leaf || !allowMissingLeaf) throw; }
++                catch (DirectoryNotFoundException) { if (!leaf || !allowMissingLeaf) throw; }
++                leaf = false;
+             }
+         }
+ 
+@@ -11019,55 +11083,89 @@
+             finally { finished = true; active = null; }
+         }
+ 
++        private static void ApplyPermissions(string path, string dacl)
++        {
++            // A fresh descriptor marks the DACL as modified for SetAccessControl.
++            // Do not attempt to assign another account as owner of staging files.
++            FileSecurity security = new FileSecurity();
++            security.SetSecurityDescriptorSddlForm(dacl, AccessControlSections.Access);
++            new FileInfo(path).SetAccessControl(security);
++        }
++
+         private static void ReplaceAll(string[] names, byte[][] data)
+         {
+             string suffix = ".mas-safer-" + Guid.NewGuid().ToString("N");
+             string[] temporary = names.Select(n => n + suffix + ".tmp").ToArray();
+             string[] backups = names.Select(n => n + suffix + ".bak").ToArray();
+-            int replaced = 0;
++            string[] displaced = names.Select(n => n + suffix + ".displaced").ToArray();
++            string[] permissions = new string[names.Length];
++            int attempted = 0;
++            bool committed = false;
+             try
+             {
+-                // Stage every output before touching ANY destination. No truncate/write fallback.
++                // Independent, verified backups survive partial failures inside File.Replace.
++                // Stage ALL outputs and backups before touching ANY destination.
+                 for (int i = 0; i < names.Length; i++)
+                 {
+                     CheckPath(names[i]);
++                    permissions[i] = new FileInfo(names[i]).GetAccessControl(AccessControlSections.Access)
++                        .GetSecurityDescriptorSddlForm(AccessControlSections.Access);
++                    File.Copy(names[i], backups[i], false);
++                    ApplyPermissions(backups[i], permissions[i]);
++                    if (!File.ReadAllBytes(backups[i]).SequenceEqual(File.ReadAllBytes(names[i])))
++                        throw new IOException("Store backup verification failed.");
+                     using (FileStream output = new FileStream(temporary[i], FileMode.CreateNew,
+                         FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+                     {
+                         output.Write(data[i], 0, data[i].Length);
+                         output.Flush();
+                     }
++                    ApplyPermissions(temporary[i], permissions[i]);
+                     if (!File.ReadAllBytes(temporary[i]).SequenceEqual(data[i]))
+                         throw new IOException("Staged store verification failed.");
+                 }
+                 for (int i = 0; i < names.Length; i++)
+                 {
+                     CheckPath(names[i]);
+-                    File.Replace(temporary[i], names[i], backups[i]);
+-                    replaced++;
++                    if (!File.ReadAllBytes(names[i]).SequenceEqual(File.ReadAllBytes(backups[i])))
++                        throw new IOException("Store changed after staging; refusing replacement.");
++                    attempted = i + 1; // Include partial failure INSIDE the native call.
++                    File.Replace(temporary[i], names[i], displaced[i]);
+                 }
++                committed = true;
+             }
+             catch (Exception writeError)
+             {
+                 string rollbackErrors = "";
+-                for (int i = replaced - 1; i >= 0; i--)
++                for (int i = attempted - 1; i >= 0; i--)
+                 {
+                     string restore = names[i] + suffix + ".restore";
+                     try
+                     {
+-                        CheckPath(names[i]);
++                        CheckPath(names[i], true);
++                        CheckPath(backups[i]);
++                        if (File.Exists(names[i]) && File.ReadAllBytes(names[i]).SequenceEqual(File.ReadAllBytes(backups[i])))
++                            continue; // Failed before mutation; leave the original in place.
+                         File.Copy(backups[i], restore, false);
+-                        File.Replace(restore, names[i], null);
++                        ApplyPermissions(restore, permissions[i]);
++                        if (!File.ReadAllBytes(restore).SequenceEqual(File.ReadAllBytes(backups[i])))
++                            throw new IOException("Recovery staging verification failed.");
++                        CheckPath(names[i], true);
++                        if (File.Exists(names[i]))
++                            File.Replace(restore, names[i], names[i] + suffix + ".rollback-displaced");
++                        else
++                            File.Move(restore, names[i]);
+                     }
+                     catch (Exception ex) { rollbackErrors += " " + names[i] + ": " + ex.Message; }
+                 }
+                 throw new IOException("Store write failed. Backups retained with suffix " + suffix +
+-                    (rollbackErrors.Length == 0 ? ". Completed replacements rolled back." :
++                    (rollbackErrors.Length == 0 ? ". Attempted file replacements restored or unchanged; licensing API/registry changes are not rolled back." :
+                     ". MANUAL RECOVERY REQUIRED:" + rollbackErrors), writeError);
+             }
+             finally
+             {
+-                foreach (string path in temporary)
++                // Retain all recovery artifacts on failure, including a partial rollback.
++                if (committed) foreach (string path in temporary.Concat(displaced))
+                 {
+                     try { if (File.Exists(path)) File.Delete(path); }
+                     catch { /* Keep staging file rather than hiding the primary error. */ }
+@@ -18982,7 +19080,7 @@
+ set "MAS_SAFE_ACTION=validate"
+ if defined isOspp set "MAS_SAFE_ACTION=validate-ospp"
+ call :mas_safer_ohook
+-if errorlevel 1 (set error=1&set ierror=Preflight&exit /b 1)
++if errorlevel 1 (set error=1&set ierror=Preflight&set mas_safer_ohook_failed=1&exit /b 1)
+ exit /b 0
+ :mas_safer_ohook
+ %psc% "$ErrorActionPreference='Stop'; try { $f=[IO.File]::ReadAllText($env:MAS_SAFE_SELF) -split '(?m)^:saferohook:\r?$'; if ($f.Count -ne 3) { throw 'Invalid helper block' }; & ([scriptblock]::Create($f[1])); exit 0 } catch { Write-Host $_.Exception.Message -ForegroundColor Red; exit 1 }"
+@@ -19097,17 +19195,35 @@
+             foreach ($v in '14','15','16') { $dirs += Join-Path $base "Microsoft Office\Office$v" }
+             foreach ($v in 'Office','Office 15') { foreach ($arch in 'System','SystemX86') { $dirs += Join-Path $base "Microsoft $v\root\vfs\$arch" } }
+         }
+-        foreach ($dir in $dirs | Select-Object -Unique) {
++        $osppDirs = @()
++        foreach ($base in @($env:CommonProgramFiles,$env:CommonProgramW6432,${env:CommonProgramFiles(x86)}) | Select-Object -Unique) {
++            if ($base) { $osppDirs += Join-Path $base 'Microsoft Shared\OfficeSoftwareProtectionPlatform' }
++        }
++        # Registry paths may end in a slash while conventional paths do not.
++        # Normalize before deduplication so one Office directory is planned once.
++        $dirs = @($dirs | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd([IO.Path]::DirectorySeparatorChar) } | Sort-Object -Unique)
++        $osppDirs = @($osppDirs | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd([IO.Path]::DirectorySeparatorChar) } | Sort-Object -Unique)
++        $osppTargets = @($osppDirs | ForEach-Object { Join-Path $_ 'sppcs.dll' })
++        foreach ($dir in $dirs) {
++            $link = Item (Join-Path $dir 'sppcs.dll')
++            # OSPP installs only a forwarding link here, not an Office-local sppc.dll.
++            if ($link -and $link.LinkType -eq 'SymbolicLink' -and $link.Target.Count -eq 1 -and
++                $osppTargets -icontains [IO.Path]::GetFullPath([string]$link.Target[0])) {
++                Assert-Directory $dir
++                Assert-Link $link.FullName ([IO.Path]::GetFullPath([string]$link.Target[0]))
++                $shared = Split-Path -Parent ([string]$link.Target[0])
++                if (-not (Is-Hook (Join-Path $shared 'OSPPC.DLL'))) { throw "Unrecognized OSPP installation: $shared" }
++                Assert-MicrosoftFile ([string]$link.Target[0])
++                Add-Plan $link.FullName 'delete' $null
++                continue
++            }
+             if (-not (Test-Path -LiteralPath (Join-Path $dir 'sppc.dll'))) { continue }
+-            $link = Item (Join-Path $dir 'sppcs.dll')
+             if (-not $link -or $link.Target.Count -ne 1) { throw "Missing/unrecognized forwarding link: $dir" }
+             $expected = @((Join-Path $env:windir 'System32\sppc.dll'), (Join-Path $env:windir 'SysWOW64\sppc.dll'))
+             if ($expected -inotcontains [string]$link.Target[0]) { throw "Unexpected forwarding target: $dir" }
+             Plan-C2R $dir $link.Target[0] '' $true
+         }
+-        foreach ($base in @($env:CommonProgramFiles,$env:CommonProgramW6432,${env:CommonProgramFiles(x86)}) | Select-Object -Unique) {
+-            if (-not $base) { continue }
+-            $dir = Join-Path $base 'Microsoft Shared\OfficeSoftwareProtectionPlatform'
++        foreach ($dir in $osppDirs | Select-Object -Unique) {
+             if (Test-Path -LiteralPath $dir) { Plan-OSPP $dir '' $true }
+         }
+     }
+@@ -19145,42 +19261,92 @@
+     $snapshots.Add($saved)
+ }
+ $snapshots | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $backup 'manifest.json') -Encoding UTF8
+-$applied = 0
++$attempted = New-Object Collections.Generic.List[int]
++$staged = @{}
++$complete = $false
+ try {
+-    foreach ($plan in $plans) {
+-        $applied++ # Include a partially completed current operation in rollback.
++    # Prepare every replacement before touching any destination.
++    for ($i=0; $i -lt $plans.Count; $i++) {
++        $plan = $plans[$i]
+         if ($plan.Kind -eq 'file') {
+             $tmp = $plan.Path + '.mas-safer-' + [guid]::NewGuid().ToString('N') + '.tmp'
+-            try {
+-                $stream = New-Object IO.FileStream($tmp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
+-                try { $stream.Write($plan.Data,0,$plan.Data.Length); $stream.Flush() } finally { $stream.Dispose() }
+-                if (Item $plan.Path) { [IO.File]::Replace($tmp,$plan.Path,$null) } else { [IO.File]::Move($tmp,$plan.Path) }
+-            } finally { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force } }
++            $staged[$i] = $tmp
++            $stream = New-Object IO.FileStream($tmp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
++            try { $stream.Write($plan.Data,0,$plan.Data.Length); $stream.Flush() } finally { $stream.Dispose() }
++            $sha = [Security.Cryptography.SHA256]::Create()
++            try { $expected = ([BitConverter]::ToString($sha.ComputeHash([byte[]]$plan.Data))).Replace('-','') } finally { $sha.Dispose() }
++            if ((Get-FileHash -LiteralPath $tmp).Hash -ne $expected) { throw 'Staged DLL verification failed.' }
++        }
++    }
++    for ($i=0; $i -lt $plans.Count; $i++) {
++        $plan = $plans[$i]; $saved = $snapshots[$i]
++        Assert-Directory (Split-Path -Parent $plan.Path)
++        $current = Item $plan.Path
++        if ($saved.Existed) {
++            if ($saved.Link) { Assert-Link $plan.Path $saved.Link; if (-not $current) { throw 'Link disappeared after backup.' } }
++            elseif (-not $current -or $current.PSIsContainer -or ($current.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
++                    (Get-FileHash -LiteralPath $plan.Path).Hash -ne $saved.Hash) { throw 'File changed after backup.' }
++        } elseif ($current) { throw 'Destination appeared after preflight.' }
++        $attempted.Add($i) # Only now may a native operation partially change its destination.
++        if ($plan.Kind -eq 'file') {
++            if ($current) { [IO.File]::Replace($staged[$i],$plan.Path,$staged[$i]+'.displaced') }
++            else { [IO.File]::Move($staged[$i],$plan.Path) }
+         } elseif ($plan.Kind -eq 'link') {
+             [void](New-Item -ItemType SymbolicLink -Path $plan.Path -Target $plan.Data)
+         } else { Remove-Item -LiteralPath $plan.Path -Force }
+     }
+     'complete' | Set-Content -LiteralPath (Join-Path $backup 'status.txt')
++    $complete = $true
+     Write-Host "Verified Ohook files updated. Backups: $backup"
+ } catch {
+     $failure = $_
+     $rollbackErrors = @()
+-    for ($i=$applied-1; $i -ge 0; $i--) {
+-        $saved=$snapshots[$i]
++    for ($a=$attempted.Count-1; $a -ge 0; $a--) {
++        $i=$attempted[$a]; $saved=$snapshots[$i]; $plan=$plans[$i]
+         try {
+-            if (Item $saved.Path) { Remove-Item -LiteralPath $saved.Path -Force }
++            Assert-Directory (Split-Path -Parent $saved.Path)
++            $current = Item $saved.Path
+             if ($saved.Existed) {
+-                if ($saved.Link) { [void](New-Item -ItemType SymbolicLink -Path $saved.Path -Target $saved.Link) }
++                if ($saved.Link) {
++                    if ($current) { Assert-Link $saved.Path $saved.Link }
++                    else { [void](New-Item -ItemType SymbolicLink -Path $saved.Path -Target $saved.Link) }
++                }
+                 else {
+-                    [IO.File]::Copy($saved.Backup,$saved.Path,$false)
++                    if ($current -and ($current.PSIsContainer -or ($current.Attributes -band [IO.FileAttributes]::ReparsePoint))) { throw 'Unexpected rollback destination; preserving it.' }
++                    if ($current -and (Get-FileHash -LiteralPath $saved.Path).Hash -eq $saved.Hash) { continue }
++                    # Never delete the current DLL before preparing its complete replacement.
++                    $restore = $saved.Path + '.mas-restore-' + [guid]::NewGuid().ToString('N')
++                    if ((Get-FileHash -LiteralPath $saved.Backup).Hash -ne $saved.Hash) { throw 'Recovery backup hash mismatch.' }
++                    [IO.File]::Copy($saved.Backup,$restore,$false)
++                    if ((Get-FileHash -LiteralPath $restore).Hash -ne $saved.Hash) { throw 'Recovery staging hash mismatch.' }
+                     $fileAcl=New-Object Security.AccessControl.FileSecurity
+-                    $fileAcl.SetSecurityDescriptorSddlForm($saved.Acl)
+-                    Set-Acl -LiteralPath $saved.Path -AclObject $fileAcl
++                    $fileAcl.SetSecurityDescriptorSddlForm($saved.Acl,[Security.AccessControl.AccessControlSections]::Access)
++                    Set-Acl -LiteralPath $restore -AclObject $fileAcl
++                    if ($current) { [IO.File]::Replace($restore,$saved.Path,$restore+'.displaced') }
++                    else { [IO.File]::Move($restore,$saved.Path) }
+                 }
++            } elseif ($current) {
++                # Remove only the file/link created by this operation, never an unknown object.
++                if ($plan.Kind -eq 'link') { Assert-Link $saved.Path ([string]$plan.Data) }
++                elseif ($plan.Kind -eq 'file') {
++                    if ($current.PSIsContainer -or ($current.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unexpected new rollback destination.' }
++                    $sha = [Security.Cryptography.SHA256]::Create()
++                    try { $expected = ([BitConverter]::ToString($sha.ComputeHash([byte[]]$plan.Data))).Replace('-','') } finally { $sha.Dispose() }
++                    if ((Get-FileHash -LiteralPath $saved.Path).Hash -ne $expected) { throw 'New file changed; preserving it.' }
++                } else { throw 'Unexpected rollback operation.' }
++                Remove-Item -LiteralPath $saved.Path -Force
+             }
+         } catch { $rollbackErrors += $_.Exception.Message }
+     }
+-    throw "Ohook operation failed: $($failure.Exception.Message). Backups: $backup. Rollback errors: $($rollbackErrors -join '; ')"
++    throw "Ohook operation failed: $($failure.Exception.Message). Backups: $backup. File rollback errors: $($rollbackErrors -join '; '). Licensing API/registry changes are not rolled back."
++} finally {
++    if ($complete) {
++        foreach ($tmp in $staged.Values) {
++            foreach ($path in @($tmp,($tmp+'.displaced'))) {
++                try { if (Item $path) { Remove-Item -LiteralPath $path -Force } } catch { Write-Warning "Retained staging file: $path" }
++            }
++        }
++    }
+ }
+ :saferohook:
+ 
+--- safer-r1/MAS/Separate-Files-Version/Activators/HWID_Activation.cmd
++++ safer-r2/MAS/Separate-Files-Version/Activators/HWID_Activation.cmd
+@@ -1326,7 +1326,11 @@
+ set serv_csts=
+ set serv_cste=
+ 
+-if defined serv_ste (
++if not "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if defined serv_ste (
++echo Enabling Disabled Services              [Skipped: automatic repairs disabled] [%serv_ste%]
++set error=1
++)
++if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if defined serv_ste (
+ for %%# in (%serv_ste%) do (
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ if /i %%#==ClipSVC          (reg add "HKLM\SYSTEM\CurrentControlSet\Services\%%#" /v "Start" /t REG_DWORD /d "3" /f %nul% & sc config %%# start= demand %nul%)
+@@ -1365,7 +1369,7 @@
+ if not defined showfix (
+ echo:
+ echo %serv_cste% | findstr /i "ClipSVC sppsvc" %nul% && (
+-echo A registry fix has been applied to enable the disabled service.
++echo Automatic service repair failed. Inspect the service configuration before retrying.
+ call :dk_color %Blue% "Reboot your machine using the restart option to fix this error."
+ ) || (
+ set fixes=%fixes% %mas%in-place_repair_upgrade
+@@ -1485,7 +1489,11 @@
+ 
+ ::  This code creates token folder only if it's missing and sets default permission for it
+ 
+-if %winbuild% GEQ 7600 if not defined toerr if not exist "%tokenstore%\" (
++if not "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if %winbuild% GEQ 7600 if not defined toerr if not exist "%tokenstore%\" (
++echo Checking SPP Token Folder               [Missing; automatic creation skipped]
++set error=1
++)
++if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if %winbuild% GEQ 7600 if not defined toerr if not exist "%tokenstore%\" (
+ 
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ mkdir "%tokenstore%" %nul%
+@@ -1642,7 +1650,7 @@
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ %psc% "if (-not $env:_vis) {Start-Job { Stop-Service %_slser% -force } | Wait-Job -Timeout 20 | Out-Null}; $sls = Get-WmiObject SoftwareLicensingService; $f=[IO.File]::ReadAllText('!_batp!') -split ':xrm\:.*';. ([scriptblock]::Create($f[1])); ReinstallLicenses" %nul%
+ )
+-if not defined _vis if !errorlevel! NEQ 0 set rlicfailed=1
++if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if not defined _vis if !errorlevel! NEQ 0 set rlicfailed=1
+ call :dk_actid 55c92734-d682-4d71-983e-d6ec3f16059f
+ )
+ 
+@@ -1804,9 +1812,16 @@
+ if %winbuild% GEQ 7600 for /f "skip=2 tokens=2*" %%a in ('reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform" /v "SkipRearm" %nul6%') do if /i %%b NEQ 0x0 (
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform" /v "SkipRearm" /t REG_DWORD /d "0" /f %nul%
+-)
+-call :dk_color %Gray% "Checking SkipRearm                      [Default 0 Value Not Found. Changing To 0]"
++if !errorlevel!==0 (
++call :dk_color %Gray% "Checking SkipRearm                      [Changed To 0]"
+ %psc% "Start-Job { Stop-Service sppsvc -force } | Wait-Job -Timeout 20 | Out-Null"
++) else (
++set error=1
++call :dk_color %Red% "Checking SkipRearm                      [Failed To Change]"
++)
++) else (
++echo Checking SkipRearm                      [Non-default; automatic repair skipped]
++)
+ )
+ 
+ ::==============================
+--- safer-r1/MAS/Separate-Files-Version/Activators/Ohook_Activation_AIO.cmd
++++ safer-r2/MAS/Separate-Files-Version/Activators/Ohook_Activation_AIO.cmd
+@@ -427,6 +427,7 @@
+ ::========================================================================================================================================
+ 
+ :oh_menu2
++set mas_safer_ohook_failed=
+ 
+ cls
+ if not defined terminal (
+@@ -656,6 +657,7 @@
+ ) else (
+ call :oh_hookinstall
+ )
++if defined mas_safer_ohook_failed goto :dk_done
+ 
+ ::========================================================================================================================================
+ 
+@@ -719,6 +721,7 @@
+ ) else (
+ call :oh_hookinstall
+ )
++if defined mas_safer_ohook_failed goto :dk_done
+ 
+ ::========================================================================================================================================
+ 
+@@ -757,9 +760,12 @@
+ 
+ if defined o14msi call :oh_setspp 14
+ if defined o14msi call :oh_processmsi 14 %o14msi_reg%
++if defined mas_safer_ohook_failed goto :dk_done
+ call :oh_setspp
+ if defined o15msi call :oh_processmsi 15 %o15msi_reg%
++if defined mas_safer_ohook_failed goto :dk_done
+ if defined o16msi call :oh_processmsi 16 %o16msi_reg%
++if defined mas_safer_ohook_failed goto :dk_done
+ 
+ ::========================================================================================================================================
+ 
+@@ -1074,7 +1080,8 @@
+ )
+ )
+ 
+-exit /b
++if defined ierror (set mas_safer_ohook_failed=1&exit /b 1)
++exit /b 0
+ 
+ ::========================================================================================================================================
+ 
+@@ -1157,7 +1164,7 @@
+ 
+ call :oh_ppcpath
+ call :mas_safer_preflight
+-if errorlevel 1 goto :dk_done
++if errorlevel 1 exit /b 1
+ 
+ call :msiofficedata %2
+ 
+@@ -1187,6 +1194,7 @@
+ ) else (
+ call :oh_hookinstall
+ )
++if defined mas_safer_ohook_failed exit /b 1
+ 
+ exit /b
+ 
+@@ -1838,7 +1846,11 @@
+ set serv_csts=
+ set serv_cste=
+ 
+-if defined serv_ste (
++if not "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if defined serv_ste (
++echo Enabling Disabled Services              [Skipped: automatic repairs disabled] [%serv_ste%]
++set error=1
++)
++if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if defined serv_ste (
+ for %%# in (%serv_ste%) do (
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ if /i %%#==ClipSVC          (reg add "HKLM\SYSTEM\CurrentControlSet\Services\%%#" /v "Start" /t REG_DWORD /d "3" /f %nul% & sc config %%# start= demand %nul%)
+@@ -1877,7 +1889,7 @@
+ if not defined showfix (
+ echo:
+ echo %serv_cste% | findstr /i "ClipSVC sppsvc" %nul% && (
+-echo A registry fix has been applied to enable the disabled service.
++echo Automatic service repair failed. Inspect the service configuration before retrying.
+ call :dk_color %Blue% "Reboot your machine using the restart option to fix this error."
+ ) || (
+ set fixes=%fixes% %mas%in-place_repair_upgrade
+@@ -1997,7 +2009,11 @@
+ 
+ ::  This code creates token folder only if it's missing and sets default permission for it
+ 
+-if %winbuild% GEQ 7600 if not defined toerr if not exist "%tokenstore%\" (
++if not "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if %winbuild% GEQ 7600 if not defined toerr if not exist "%tokenstore%\" (
++echo Checking SPP Token Folder               [Missing; automatic creation skipped]
++set error=1
++)
++if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if %winbuild% GEQ 7600 if not defined toerr if not exist "%tokenstore%\" (
+ 
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ mkdir "%tokenstore%" %nul%
+@@ -2154,7 +2170,7 @@
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ %psc% "if (-not $env:_vis) {Start-Job { Stop-Service %_slser% -force } | Wait-Job -Timeout 20 | Out-Null}; $sls = Get-WmiObject SoftwareLicensingService; $f=[IO.File]::ReadAllText('!_batp!') -split ':xrm\:.*';. ([scriptblock]::Create($f[1])); ReinstallLicenses" %nul%
+ )
+-if not defined _vis if !errorlevel! NEQ 0 set rlicfailed=1
++if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if not defined _vis if !errorlevel! NEQ 0 set rlicfailed=1
+ call :dk_actid 55c92734-d682-4d71-983e-d6ec3f16059f
+ )
+ 
+@@ -2316,9 +2332,16 @@
+ if %winbuild% GEQ 7600 for /f "skip=2 tokens=2*" %%a in ('reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform" /v "SkipRearm" %nul6%') do if /i %%b NEQ 0x0 (
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform" /v "SkipRearm" /t REG_DWORD /d "0" /f %nul%
+-)
+-call :dk_color %Gray% "Checking SkipRearm                      [Default 0 Value Not Found. Changing To 0]"
++if !errorlevel!==0 (
++call :dk_color %Gray% "Checking SkipRearm                      [Changed To 0]"
+ %psc% "Start-Job { Stop-Service sppsvc -force } | Wait-Job -Timeout 20 | Out-Null"
++) else (
++set error=1
++call :dk_color %Red% "Checking SkipRearm                      [Failed To Change]"
++)
++) else (
++echo Checking SkipRearm                      [Non-default; automatic repair skipped]
++)
+ )
+ 
+ ::==============================
+@@ -3081,7 +3104,7 @@
+ set "MAS_SAFE_ACTION=validate"
+ if defined isOspp set "MAS_SAFE_ACTION=validate-ospp"
+ call :mas_safer_ohook
+-if errorlevel 1 (set error=1&set ierror=Preflight&exit /b 1)
++if errorlevel 1 (set error=1&set ierror=Preflight&set mas_safer_ohook_failed=1&exit /b 1)
+ exit /b 0
+ :mas_safer_ohook
+ %psc% "$ErrorActionPreference='Stop'; try { $f=[IO.File]::ReadAllText($env:MAS_SAFE_SELF) -split '(?m)^:saferohook:\r?$'; if ($f.Count -ne 3) { throw 'Invalid helper block' }; & ([scriptblock]::Create($f[1])); exit 0 } catch { Write-Host $_.Exception.Message -ForegroundColor Red; exit 1 }"
+@@ -3196,17 +3219,35 @@
+             foreach ($v in '14','15','16') { $dirs += Join-Path $base "Microsoft Office\Office$v" }
+             foreach ($v in 'Office','Office 15') { foreach ($arch in 'System','SystemX86') { $dirs += Join-Path $base "Microsoft $v\root\vfs\$arch" } }
+         }
+-        foreach ($dir in $dirs | Select-Object -Unique) {
++        $osppDirs = @()
++        foreach ($base in @($env:CommonProgramFiles,$env:CommonProgramW6432,${env:CommonProgramFiles(x86)}) | Select-Object -Unique) {
++            if ($base) { $osppDirs += Join-Path $base 'Microsoft Shared\OfficeSoftwareProtectionPlatform' }
++        }
++        # Registry paths may end in a slash while conventional paths do not.
++        # Normalize before deduplication so one Office directory is planned once.
++        $dirs = @($dirs | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd([IO.Path]::DirectorySeparatorChar) } | Sort-Object -Unique)
++        $osppDirs = @($osppDirs | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd([IO.Path]::DirectorySeparatorChar) } | Sort-Object -Unique)
++        $osppTargets = @($osppDirs | ForEach-Object { Join-Path $_ 'sppcs.dll' })
++        foreach ($dir in $dirs) {
++            $link = Item (Join-Path $dir 'sppcs.dll')
++            # OSPP installs only a forwarding link here, not an Office-local sppc.dll.
++            if ($link -and $link.LinkType -eq 'SymbolicLink' -and $link.Target.Count -eq 1 -and
++                $osppTargets -icontains [IO.Path]::GetFullPath([string]$link.Target[0])) {
++                Assert-Directory $dir
++                Assert-Link $link.FullName ([IO.Path]::GetFullPath([string]$link.Target[0]))
++                $shared = Split-Path -Parent ([string]$link.Target[0])
++                if (-not (Is-Hook (Join-Path $shared 'OSPPC.DLL'))) { throw "Unrecognized OSPP installation: $shared" }
++                Assert-MicrosoftFile ([string]$link.Target[0])
++                Add-Plan $link.FullName 'delete' $null
++                continue
++            }
+             if (-not (Test-Path -LiteralPath (Join-Path $dir 'sppc.dll'))) { continue }
+-            $link = Item (Join-Path $dir 'sppcs.dll')
+             if (-not $link -or $link.Target.Count -ne 1) { throw "Missing/unrecognized forwarding link: $dir" }
+             $expected = @((Join-Path $env:windir 'System32\sppc.dll'), (Join-Path $env:windir 'SysWOW64\sppc.dll'))
+             if ($expected -inotcontains [string]$link.Target[0]) { throw "Unexpected forwarding target: $dir" }
+             Plan-C2R $dir $link.Target[0] '' $true
+         }
+-        foreach ($base in @($env:CommonProgramFiles,$env:CommonProgramW6432,${env:CommonProgramFiles(x86)}) | Select-Object -Unique) {
+-            if (-not $base) { continue }
+-            $dir = Join-Path $base 'Microsoft Shared\OfficeSoftwareProtectionPlatform'
++        foreach ($dir in $osppDirs | Select-Object -Unique) {
+             if (Test-Path -LiteralPath $dir) { Plan-OSPP $dir '' $true }
+         }
+     }
+@@ -3244,41 +3285,91 @@
+     $snapshots.Add($saved)
+ }
+ $snapshots | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $backup 'manifest.json') -Encoding UTF8
+-$applied = 0
++$attempted = New-Object Collections.Generic.List[int]
++$staged = @{}
++$complete = $false
+ try {
+-    foreach ($plan in $plans) {
+-        $applied++ # Include a partially completed current operation in rollback.
++    # Prepare every replacement before touching any destination.
++    for ($i=0; $i -lt $plans.Count; $i++) {
++        $plan = $plans[$i]
+         if ($plan.Kind -eq 'file') {
+             $tmp = $plan.Path + '.mas-safer-' + [guid]::NewGuid().ToString('N') + '.tmp'
+-            try {
+-                $stream = New-Object IO.FileStream($tmp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
+-                try { $stream.Write($plan.Data,0,$plan.Data.Length); $stream.Flush() } finally { $stream.Dispose() }
+-                if (Item $plan.Path) { [IO.File]::Replace($tmp,$plan.Path,$null) } else { [IO.File]::Move($tmp,$plan.Path) }
+-            } finally { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force } }
++            $staged[$i] = $tmp
++            $stream = New-Object IO.FileStream($tmp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
++            try { $stream.Write($plan.Data,0,$plan.Data.Length); $stream.Flush() } finally { $stream.Dispose() }
++            $sha = [Security.Cryptography.SHA256]::Create()
++            try { $expected = ([BitConverter]::ToString($sha.ComputeHash([byte[]]$plan.Data))).Replace('-','') } finally { $sha.Dispose() }
++            if ((Get-FileHash -LiteralPath $tmp).Hash -ne $expected) { throw 'Staged DLL verification failed.' }
++        }
++    }
++    for ($i=0; $i -lt $plans.Count; $i++) {
++        $plan = $plans[$i]; $saved = $snapshots[$i]
++        Assert-Directory (Split-Path -Parent $plan.Path)
++        $current = Item $plan.Path
++        if ($saved.Existed) {
++            if ($saved.Link) { Assert-Link $plan.Path $saved.Link; if (-not $current) { throw 'Link disappeared after backup.' } }
++            elseif (-not $current -or $current.PSIsContainer -or ($current.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
++                    (Get-FileHash -LiteralPath $plan.Path).Hash -ne $saved.Hash) { throw 'File changed after backup.' }
++        } elseif ($current) { throw 'Destination appeared after preflight.' }
++        $attempted.Add($i) # Only now may a native operation partially change its destination.
++        if ($plan.Kind -eq 'file') {
++            if ($current) { [IO.File]::Replace($staged[$i],$plan.Path,$staged[$i]+'.displaced') }
++            else { [IO.File]::Move($staged[$i],$plan.Path) }
+         } elseif ($plan.Kind -eq 'link') {
+             [void](New-Item -ItemType SymbolicLink -Path $plan.Path -Target $plan.Data)
+         } else { Remove-Item -LiteralPath $plan.Path -Force }
+     }
+     'complete' | Set-Content -LiteralPath (Join-Path $backup 'status.txt')
++    $complete = $true
+     Write-Host "Verified Ohook files updated. Backups: $backup"
+ } catch {
+     $failure = $_
+     $rollbackErrors = @()
+-    for ($i=$applied-1; $i -ge 0; $i--) {
+-        $saved=$snapshots[$i]
++    for ($a=$attempted.Count-1; $a -ge 0; $a--) {
++        $i=$attempted[$a]; $saved=$snapshots[$i]; $plan=$plans[$i]
+         try {
+-            if (Item $saved.Path) { Remove-Item -LiteralPath $saved.Path -Force }
++            Assert-Directory (Split-Path -Parent $saved.Path)
++            $current = Item $saved.Path
+             if ($saved.Existed) {
+-                if ($saved.Link) { [void](New-Item -ItemType SymbolicLink -Path $saved.Path -Target $saved.Link) }
++                if ($saved.Link) {
++                    if ($current) { Assert-Link $saved.Path $saved.Link }
++                    else { [void](New-Item -ItemType SymbolicLink -Path $saved.Path -Target $saved.Link) }
++                }
+                 else {
+-                    [IO.File]::Copy($saved.Backup,$saved.Path,$false)
++                    if ($current -and ($current.PSIsContainer -or ($current.Attributes -band [IO.FileAttributes]::ReparsePoint))) { throw 'Unexpected rollback destination; preserving it.' }
++                    if ($current -and (Get-FileHash -LiteralPath $saved.Path).Hash -eq $saved.Hash) { continue }
++                    # Never delete the current DLL before preparing its complete replacement.
++                    $restore = $saved.Path + '.mas-restore-' + [guid]::NewGuid().ToString('N')
++                    if ((Get-FileHash -LiteralPath $saved.Backup).Hash -ne $saved.Hash) { throw 'Recovery backup hash mismatch.' }
++                    [IO.File]::Copy($saved.Backup,$restore,$false)
++                    if ((Get-FileHash -LiteralPath $restore).Hash -ne $saved.Hash) { throw 'Recovery staging hash mismatch.' }
+                     $fileAcl=New-Object Security.AccessControl.FileSecurity
+-                    $fileAcl.SetSecurityDescriptorSddlForm($saved.Acl)
+-                    Set-Acl -LiteralPath $saved.Path -AclObject $fileAcl
++                    $fileAcl.SetSecurityDescriptorSddlForm($saved.Acl,[Security.AccessControl.AccessControlSections]::Access)
++                    Set-Acl -LiteralPath $restore -AclObject $fileAcl
++                    if ($current) { [IO.File]::Replace($restore,$saved.Path,$restore+'.displaced') }
++                    else { [IO.File]::Move($restore,$saved.Path) }
+                 }
++            } elseif ($current) {
++                # Remove only the file/link created by this operation, never an unknown object.
++                if ($plan.Kind -eq 'link') { Assert-Link $saved.Path ([string]$plan.Data) }
++                elseif ($plan.Kind -eq 'file') {
++                    if ($current.PSIsContainer -or ($current.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unexpected new rollback destination.' }
++                    $sha = [Security.Cryptography.SHA256]::Create()
++                    try { $expected = ([BitConverter]::ToString($sha.ComputeHash([byte[]]$plan.Data))).Replace('-','') } finally { $sha.Dispose() }
++                    if ((Get-FileHash -LiteralPath $saved.Path).Hash -ne $expected) { throw 'New file changed; preserving it.' }
++                } else { throw 'Unexpected rollback operation.' }
++                Remove-Item -LiteralPath $saved.Path -Force
+             }
+         } catch { $rollbackErrors += $_.Exception.Message }
+     }
+-    throw "Ohook operation failed: $($failure.Exception.Message). Backups: $backup. Rollback errors: $($rollbackErrors -join '; ')"
++    throw "Ohook operation failed: $($failure.Exception.Message). Backups: $backup. File rollback errors: $($rollbackErrors -join '; '). Licensing API/registry changes are not rolled back."
++} finally {
++    if ($complete) {
++        foreach ($tmp in $staged.Values) {
++            foreach ($path in @($tmp,($tmp+'.displaced'))) {
++                try { if (Item $path) { Remove-Item -LiteralPath $path -Force } } catch { Write-Warning "Retained staging file: $path" }
++            }
++        }
++    }
+ }
+ :saferohook:
+--- safer-r1/MAS/Separate-Files-Version/Activators/Online_KMS_Activation.cmd
++++ safer-r2/MAS/Separate-Files-Version/Activators/Online_KMS_Activation.cmd
+@@ -3081,7 +3081,11 @@
+ set serv_csts=
+ set serv_cste=
+ 
+-if defined serv_ste (
++if not "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if defined serv_ste (
++echo Enabling Disabled Services              [Skipped: automatic repairs disabled] [%serv_ste%]
++set error=1
++)
++if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if defined serv_ste (
+ for %%# in (%serv_ste%) do (
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ if /i %%#==ClipSVC          (reg add "HKLM\SYSTEM\CurrentControlSet\Services\%%#" /v "Start" /t REG_DWORD /d "3" /f %nul% & sc config %%# start= demand %nul%)
+@@ -3120,7 +3124,7 @@
+ if not defined showfix (
+ echo:
+ echo %serv_cste% | findstr /i "ClipSVC sppsvc" %nul% && (
+-echo A registry fix has been applied to enable the disabled service.
++echo Automatic service repair failed. Inspect the service configuration before retrying.
+ call :dk_color %Blue% "Reboot your machine using the restart option to fix this error."
+ ) || (
+ set fixes=%fixes% %mas%in-place_repair_upgrade
+@@ -3240,7 +3244,11 @@
+ 
+ ::  This code creates token folder only if it's missing and sets default permission for it
+ 
+-if %winbuild% GEQ 7600 if not defined toerr if not exist "%tokenstore%\" (
++if not "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if %winbuild% GEQ 7600 if not defined toerr if not exist "%tokenstore%\" (
++echo Checking SPP Token Folder               [Missing; automatic creation skipped]
++set error=1
++)
++if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if %winbuild% GEQ 7600 if not defined toerr if not exist "%tokenstore%\" (
+ 
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ mkdir "%tokenstore%" %nul%
+@@ -3397,7 +3405,7 @@
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ %psc% "if (-not $env:_vis) {Start-Job { Stop-Service %_slser% -force } | Wait-Job -Timeout 20 | Out-Null}; $sls = Get-WmiObject SoftwareLicensingService; $f=[IO.File]::ReadAllText('!_batp!') -split ':xrm\:.*';. ([scriptblock]::Create($f[1])); ReinstallLicenses" %nul%
+ )
+-if not defined _vis if !errorlevel! NEQ 0 set rlicfailed=1
++if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if not defined _vis if !errorlevel! NEQ 0 set rlicfailed=1
+ call :dk_actid 55c92734-d682-4d71-983e-d6ec3f16059f
+ )
+ 
+@@ -3559,9 +3567,16 @@
+ if %winbuild% GEQ 7600 for /f "skip=2 tokens=2*" %%a in ('reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform" /v "SkipRearm" %nul6%') do if /i %%b NEQ 0x0 (
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform" /v "SkipRearm" /t REG_DWORD /d "0" /f %nul%
+-)
+-call :dk_color %Gray% "Checking SkipRearm                      [Default 0 Value Not Found. Changing To 0]"
++if !errorlevel!==0 (
++call :dk_color %Gray% "Checking SkipRearm                      [Changed To 0]"
+ %psc% "Start-Job { Stop-Service sppsvc -force } | Wait-Job -Timeout 20 | Out-Null"
++) else (
++set error=1
++call :dk_color %Red% "Checking SkipRearm                      [Failed To Change]"
++)
++) else (
++echo Checking SkipRearm                      [Non-default; automatic repair skipped]
++)
+ )
+ 
+ ::==============================
+--- safer-r1/MAS/Separate-Files-Version/Activators/TSforge_Activation.cmd
++++ safer-r2/MAS/Separate-Files-Version/Activators/TSforge_Activation.cmd
+@@ -3135,7 +3135,11 @@
+ set serv_csts=
+ set serv_cste=
+ 
+-if defined serv_ste (
++if not "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if defined serv_ste (
++echo Enabling Disabled Services              [Skipped: automatic repairs disabled] [%serv_ste%]
++set error=1
++)
++if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if defined serv_ste (
+ for %%# in (%serv_ste%) do (
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ if /i %%#==ClipSVC          (reg add "HKLM\SYSTEM\CurrentControlSet\Services\%%#" /v "Start" /t REG_DWORD /d "3" /f %nul% & sc config %%# start= demand %nul%)
+@@ -3174,7 +3178,7 @@
+ if not defined showfix (
+ echo:
+ echo %serv_cste% | findstr /i "ClipSVC sppsvc" %nul% && (
+-echo A registry fix has been applied to enable the disabled service.
++echo Automatic service repair failed. Inspect the service configuration before retrying.
+ call :dk_color %Blue% "Reboot your machine using the restart option to fix this error."
+ ) || (
+ set fixes=%fixes% %mas%in-place_repair_upgrade
+@@ -3294,7 +3298,11 @@
+ 
+ ::  This code creates token folder only if it's missing and sets default permission for it
+ 
+-if %winbuild% GEQ 7600 if not defined toerr if not exist "%tokenstore%\" (
++if not "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if %winbuild% GEQ 7600 if not defined toerr if not exist "%tokenstore%\" (
++echo Checking SPP Token Folder               [Missing; automatic creation skipped]
++set error=1
++)
++if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if %winbuild% GEQ 7600 if not defined toerr if not exist "%tokenstore%\" (
+ 
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ mkdir "%tokenstore%" %nul%
+@@ -3451,7 +3459,7 @@
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ %psc% "if (-not $env:_vis) {Start-Job { Stop-Service %_slser% -force } | Wait-Job -Timeout 20 | Out-Null}; $sls = Get-WmiObject SoftwareLicensingService; $f=[IO.File]::ReadAllText('!_batp!') -split ':xrm\:.*';. ([scriptblock]::Create($f[1])); ReinstallLicenses" %nul%
+ )
+-if not defined _vis if !errorlevel! NEQ 0 set rlicfailed=1
++if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" if not defined _vis if !errorlevel! NEQ 0 set rlicfailed=1
+ call :dk_actid 55c92734-d682-4d71-983e-d6ec3f16059f
+ )
+ 
+@@ -3613,9 +3621,16 @@
+ if %winbuild% GEQ 7600 for /f "skip=2 tokens=2*" %%a in ('reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform" /v "SkipRearm" %nul6%') do if /i %%b NEQ 0x0 (
+ if "%MAS_SAFER_ALLOW_REPAIRS%"=="1" (
+ reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform" /v "SkipRearm" /t REG_DWORD /d "0" /f %nul%
+-)
+-call :dk_color %Gray% "Checking SkipRearm                      [Default 0 Value Not Found. Changing To 0]"
++if !errorlevel!==0 (
++call :dk_color %Gray% "Checking SkipRearm                      [Changed To 0]"
+ %psc% "Start-Job { Stop-Service sppsvc -force } | Wait-Job -Timeout 20 | Out-Null"
++) else (
++set error=1
++call :dk_color %Red% "Checking SkipRearm                      [Failed To Change]"
++)
++) else (
++echo Checking SkipRearm                      [Non-default; automatic repair skipped]
++)
+ )
+ 
+ ::==============================
+@@ -5933,11 +5948,10 @@
+ 
+             ProductKey pkey = config.GetRandomKey();
+ 
+-            Guid instPkeyId = SLApi.GetInstalledPkeyID(actId);
+-            if (instPkeyId != Guid.Empty) SLApi.UninstallProductKey(instPkeyId);
+-
+             if (pkey.Algorithm == PKeyAlgorithm.PKEY2009)
+             {
++                Guid instPkeyId = SLApi.GetInstalledPkeyID(actId);
++                if (instPkeyId != Guid.Empty) SLApi.UninstallProductKey(instPkeyId);
+                 uint status = SLApi.InstallProductKey(pkey);
+                 Logger.WriteLine(string.Format("Installing generated product key {0} status {1:X}", pkey, status));
+ 
+@@ -6017,6 +6031,28 @@
+             bool isAddon = SLApi.IsAddon(actId);
+             string currEdition = SLApi.GetMetaStr(actId, "Family");
+ 
++            // All newly strict format checks run before ANY product key is removed.
++            // Dispose is read-only. These objects are discarded, never committed.
++            // Service recovery is still required if preflight itself fails.
++            try
++            {
++                SPPUtils.KillSPP(version);
++                using (IPhysicalStore preflightPhysical = SPPUtils.GetStore(version, production))
++                using (ITokenStore preflightTokens = SPPUtils.GetTokenStore(version))
++                {
++                    string preflightSuffix = (version == PSVersion.Win8 || version == PSVersion.WinBlue || version == PSVersion.WinModern) ? "_--_met" : "_met";
++                    preflightTokens.GetMetaEntry("msft:spp/token/PKeyIdUriMapper" + preflightSuffix);
++                    preflightTokens.GetMetaEntry(actId + preflightSuffix);
++                    if (appId == SLApi.WINDOWS_APP_ID && !isAddon)
++                        preflightTokens.GetMetaEntry("msft:spp/token/windows/productkeyid/" + currEdition);
++                }
++            }
++            finally { SPPUtils.RestartSPP(version); }
++
++            // Reopen stores after the licensing API updates them; never write stale preflight data.
++            Guid previousPkeyId = SLApi.GetInstalledPkeyID(actId);
++            if (previousPkeyId != Guid.Empty) SLApi.UninstallProductKey(previousPkeyId);
++
+             if (appId == SLApi.WINDOWS_APP_ID && !isAddon)
+             {
+                 SLApi.UninstallAllProductKeys(appId);
+@@ -6044,7 +6080,7 @@
+                         edToken.Data["windowsComponentEditionSkuId"] = actId.ToString();
+                         tks.SetEntry(edTokName, "xml", edToken.Serialize());
+ 
+-                        WritePkey2005RegistryValues(version, pkey);
++                        // Registry values are written only after the file batch commits.
+                     }
+ 
+                     string uriMapName = "msft:spp/token/PKeyIdUriMapper" + metSuffix;
+@@ -6079,14 +6115,18 @@
+                         Data = pkb.Serialize()
+                     });
+ 
+-                    string cachePath = SPPUtils.GetTokensPath(version).Replace("tokens.dat", @"cache\cache.dat");
+-                    if (File.Exists(cachePath)) File.Delete(cachePath);
+                     tks.Commit();
+                 }
+                 ps.Commit();
+             }
+                 batch.Commit();
+             }
++
++            // Still stopped: invalidate the cache before asking the licensing service to reload.
++            string cachePath = SPPUtils.GetTokensPath(version).Replace("tokens.dat", @"cache\cache.dat");
++            if (File.Exists(cachePath)) File.Delete(cachePath);
++            if (appId == SLApi.WINDOWS_APP_ID && !isAddon)
++                WritePkey2005RegistryValues(version, pkey);
+ 
+             SLApi.RefreshTrustedTime(actId);
+             Logger.WriteLine("Successfully deposited fake product key.");
+@@ -8865,9 +8905,11 @@
+     using System.Collections.Generic;
+     using System.IO;
+     using System.Linq;
++    using System.Security.AccessControl;
+ 
+     // A batch is explicit: disposing after an exception NEVER saves pending data.
+-    // File.Replace is atomic per file, not across files or across power loss.
++    // A failed Windows replacement may already have moved its destination.
++    // Recovery is best-effort per file, not a transaction across power loss.
+     public sealed class StoreWriteBatch : IDisposable
+     {
+         [ThreadStatic] private static StoreWriteBatch active;
+@@ -8883,10 +8925,24 @@
+ 
+         private static void CheckPath(string path)
+         {
++            CheckPath(path, false);
++        }
++
++        private static void CheckPath(string path, bool allowMissingLeaf)
++        {
++            bool leaf = true;
+             for (string p = Path.GetFullPath(path); !string.IsNullOrEmpty(p); p = Path.GetDirectoryName(p))
+             {
+-                if ((File.GetAttributes(p) & FileAttributes.ReparsePoint) != 0)
+-                    throw new IOException("Refusing a redirected store path: " + p);
++                try
++                {
++                    FileAttributes attributes = File.GetAttributes(p);
++                    if ((attributes & FileAttributes.ReparsePoint) != 0 ||
++                        (leaf && (attributes & FileAttributes.Directory) != 0))
++                        throw new IOException("Refusing a redirected/non-file store path: " + p);
++                }
++                catch (FileNotFoundException) { if (!leaf || !allowMissingLeaf) throw; }
++                catch (DirectoryNotFoundException) { if (!leaf || !allowMissingLeaf) throw; }
++                leaf = false;
+             }
+         }
+ 
+@@ -8916,55 +8972,89 @@
+             finally { finished = true; active = null; }
+         }
+ 
++        private static void ApplyPermissions(string path, string dacl)
++        {
++            // A fresh descriptor marks the DACL as modified for SetAccessControl.
++            // Do not attempt to assign another account as owner of staging files.
++            FileSecurity security = new FileSecurity();
++            security.SetSecurityDescriptorSddlForm(dacl, AccessControlSections.Access);
++            new FileInfo(path).SetAccessControl(security);
++        }
++
+         private static void ReplaceAll(string[] names, byte[][] data)
+         {
+             string suffix = ".mas-safer-" + Guid.NewGuid().ToString("N");
+             string[] temporary = names.Select(n => n + suffix + ".tmp").ToArray();
+             string[] backups = names.Select(n => n + suffix + ".bak").ToArray();
+-            int replaced = 0;
++            string[] displaced = names.Select(n => n + suffix + ".displaced").ToArray();
++            string[] permissions = new string[names.Length];
++            int attempted = 0;
++            bool committed = false;
+             try
+             {
+-                // Stage every output before touching ANY destination. No truncate/write fallback.
++                // Independent, verified backups survive partial failures inside File.Replace.
++                // Stage ALL outputs and backups before touching ANY destination.
+                 for (int i = 0; i < names.Length; i++)
+                 {
+                     CheckPath(names[i]);
++                    permissions[i] = new FileInfo(names[i]).GetAccessControl(AccessControlSections.Access)
++                        .GetSecurityDescriptorSddlForm(AccessControlSections.Access);
++                    File.Copy(names[i], backups[i], false);
++                    ApplyPermissions(backups[i], permissions[i]);
++                    if (!File.ReadAllBytes(backups[i]).SequenceEqual(File.ReadAllBytes(names[i])))
++                        throw new IOException("Store backup verification failed.");
+                     using (FileStream output = new FileStream(temporary[i], FileMode.CreateNew,
+                         FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+                     {
+                         output.Write(data[i], 0, data[i].Length);
+                         output.Flush();
+                     }
++                    ApplyPermissions(temporary[i], permissions[i]);
+                     if (!File.ReadAllBytes(temporary[i]).SequenceEqual(data[i]))
+                         throw new IOException("Staged store verification failed.");
+                 }
+                 for (int i = 0; i < names.Length; i++)
+                 {
+                     CheckPath(names[i]);
+-                    File.Replace(temporary[i], names[i], backups[i]);
+-                    replaced++;
+-                }
++                    if (!File.ReadAllBytes(names[i]).SequenceEqual(File.ReadAllBytes(backups[i])))
++                        throw new IOException("Store changed after staging; refusing replacement.");
++                    attempted = i + 1; // Include partial failure INSIDE the native call.
++                    File.Replace(temporary[i], names[i], displaced[i]);
++                }
++                committed = true;
+             }
+             catch (Exception writeError)
+             {
+                 string rollbackErrors = "";
+-                for (int i = replaced - 1; i >= 0; i--)
++                for (int i = attempted - 1; i >= 0; i--)
+                 {
+                     string restore = names[i] + suffix + ".restore";
+                     try
+                     {
+-                        CheckPath(names[i]);
++                        CheckPath(names[i], true);
++                        CheckPath(backups[i]);
++                        if (File.Exists(names[i]) && File.ReadAllBytes(names[i]).SequenceEqual(File.ReadAllBytes(backups[i])))
++                            continue; // Failed before mutation; leave the original in place.
+                         File.Copy(backups[i], restore, false);
+-                        File.Replace(restore, names[i], null);
++                        ApplyPermissions(restore, permissions[i]);
++                        if (!File.ReadAllBytes(restore).SequenceEqual(File.ReadAllBytes(backups[i])))
++                            throw new IOException("Recovery staging verification failed.");
++                        CheckPath(names[i], true);
++                        if (File.Exists(names[i]))
++                            File.Replace(restore, names[i], names[i] + suffix + ".rollback-displaced");
++                        else
++                            File.Move(restore, names[i]);
+                     }
+                     catch (Exception ex) { rollbackErrors += " " + names[i] + ": " + ex.Message; }
+                 }
+                 throw new IOException("Store write failed. Backups retained with suffix " + suffix +
+-                    (rollbackErrors.Length == 0 ? ". Completed replacements rolled back." :
++                    (rollbackErrors.Length == 0 ? ". Attempted file replacements restored or unchanged; licensing API/registry changes are not rolled back." :
+                     ". MANUAL RECOVERY REQUIRED:" + rollbackErrors), writeError);
+             }
+             finally
+             {
+-                foreach (string path in temporary)
++                // Retain all recovery artifacts on failure, including a partial rollback.
++                if (committed) foreach (string path in temporary.Concat(displaced))
+                 {
+                     try { if (File.Exists(path)) File.Delete(path); }
+                     catch { /* Keep staging file rather than hiding the primary error. */ }

@@ -1,0 +1,4 @@
+PASS: 45 embedded PowerShell blocks parse without errors (PowerShell 7.7.0).
+PASS: both embedded DLLs decode to 9216 bytes and match the enforced SHA-256.
+PASS: one-byte embedded DLL corruption is rejected before planning a write.
+PASS: unknown existing DLL is preserved and no write is planned.

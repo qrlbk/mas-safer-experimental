@@ -1,0 +1,2 @@
+# Preserve exact reviewed bytes and checksums, including CMD CRLF.
+* -text
